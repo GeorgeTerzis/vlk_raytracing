@@ -293,9 +293,8 @@ public struct Principled : Material {
     public void scatter(Surface surface, inout State state) {
         let view = -state.ray.Direction;
         let NoV = max(dot(surface.normal, view), 1e-5);
-
-
-        let lum = dot(pdiffuse.color, float3(0.2126, 0.7152, 0.0722));
+        let albedo = pdiffuse.color;
+        let lum = dot(albedo, float3(0.2126, 0.7152, 0.0722));
         let ed = (1.0 - metallic) * lum;
         let es = lerp(0.04, 1.0, metallic);
         let ec = 0.04 * pclearcoat.weight;

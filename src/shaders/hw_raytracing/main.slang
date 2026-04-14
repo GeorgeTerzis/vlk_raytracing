@@ -20,13 +20,11 @@ struct Tri {
         return normalize(cross(e0, e1));
     }
 };
-struct Normal {
-    float3 n;
-};
 
 struct Primitive {
     Tri tri;
-    Normal norm;
+    float3  norm;
+    float3 geometric_norm;
 
     static Primitive make(PC_.Buffers buffer, uint primitive, float2 bary) {
         uint base = primitive * 3;
@@ -35,9 +33,11 @@ struct Primitive {
         let vi1 = buffer.indicies[base + 1];
         let vi2 = buffer.indicies[base + 2];
 
+
         let ni0 = buffer.normals_indicies[base + 0];
         let ni1 = buffer.normals_indicies[base + 1];
         let ni2 = buffer.normals_indicies[base + 2];
+
 
         let v0 = buffer.verts[vi0];
         let v1 = buffer.verts[vi1];
@@ -47,10 +47,9 @@ struct Primitive {
         let n1 = buffer.norms[ni1];
         let n2 = buffer.norms[ni2];
 
-        let smooth_normal =
-            normalize(n0 * (1.0 - bary.x - bary.y) + n1 * bary.x + n2 * bary.y);
-
-        return Primitive(Tri(v0, v1, v2), Normal(smooth_normal));
+        float3 smooth_normal = n0 * (1.0 - bary.x - bary.y) + n1 * bary.x + n2 * bary.y;
+        let tri = Tri(v0, v1, v2);
+        return Primitive(tri, smooth_normal, tri.normal());
     }
 };
 
@@ -91,25 +90,6 @@ struct Emision : Material {
 
     void scatter(Surface surface, inout State payload) {
         payload.color += payload.throughput * albedo * strength;
-    }
-};
-
-struct Glass2 : Material {
-    float3 ior;
-    float roughness;
-    void scatter(Surface surface, inout State payload) {
-        let red = Glass(float3(1, 0, 0), ior.x, roughness);
-        let green = Glass(float3(0, 1, 0), ior.y, roughness);
-        let blue = Glass(float3(0, 0, 1), ior.z, roughness);
-
-        let r = random::unit(payload.seed);
-        if (r < 1.0 / 3.0) {
-            red.scatter(surface, payload);
-        } else if (r < 2.0 / 3.0) {
-            blue.scatter(surface, payload);
-        } else {
-            green.scatter(surface, payload);
-        }
     }
 };
 
@@ -239,7 +219,20 @@ struct HitInfo {
         return make(GeometryIndex(), InstanceIndex(), PrimitiveIndex(), HitPos());
     }
 };
+struct Diffuse : Material {
+    float3 albedo;
 
+    void scatter(Surface surface, inout State payload) {
+        // cosine-weighted hemisphere sampling around the normal
+        float3 dir = cosine_hemisphere(surface.normal, payload.seed);
+
+        // update ray
+        payload.ray.Direction = normalize(dir);
+
+        // move energy forward
+        payload.throughput *= albedo;
+    }
+};
 void mat(const HitInfo hit, const Surface surface, inout State state) {
     let glass = Glass(float3(1), 1.5, 0.0);
 
@@ -256,10 +249,10 @@ void mat(const HitInfo hit, const Surface surface, inout State state) {
 
     if (hit.instance == 0)
         mirror.scatter(surface, state);
-    else if (hit.instance == 1)
+    else if (hit.instance == 1) {
         cloth.scatter(surface, state);
-    else if (hit.instance == 5)
-        glass.scatter(surface, state);
+    } else if (hit.instance == 5)
+        mirror.scatter(surface, state);
     else if (hit.instance == 3)
         glass.scatter(surface, state);
     else
@@ -274,7 +267,7 @@ void closest_hit_entry(inout State payload, BuiltInTriangleIntersectionAttribute
     let buffer = pc.buffers[geometry.buffer_index];
 
     let prim = Primitive::make(buffer, hit.primitive, attr.barycentrics);
-    let surface = Surface::make(prim.norm.n);
+    let surface = Surface::make(prim.geometric_norm, prim.norm);
     let safe_pos = hit.pos + (surface.normal * 1e-7);
 
     mat(hit, surface, payload);
