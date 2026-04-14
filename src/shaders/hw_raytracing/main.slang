@@ -171,7 +171,7 @@ RWTexture2D<float4> output;
 void raygen_entry() {
     let coord = DispatchRaysIndex().xy;
     uint seed = coord.x * 1973 + coord.y * 9277 + (pc.frame) * 26699;
-    static let SPP = 4;
+    static let SPP = 1;
     var s = uint(0);
     var accumilator = float3(0);
     for (; s < SPP; s++) {
@@ -251,15 +251,17 @@ void mat(const HitInfo hit, const Surface surface, inout State state) {
     let diffuse_specular = Principled::specular_params(1, 1, float3(1, 0, 0));
     let diffuse = Principled(0.5, 0, diffuse_dif, {}, diffuse_specular, {});
 
-    let mirror_specular= Principled::specular_params(0, 0, float3(1));
+    let mirror_specular = Principled::specular_params(0, 0, float3(1));
     let mirror = Principled(0.0, 1, {}, {}, mirror_specular, {});
 
-    if (hit.instance == 0 || hit.instance == 5)
+    if (hit.instance == 0)
         mirror.scatter(surface, state);
-    else if (hit.instance == 3)
-        glass.scatter(surface, state);
     else if (hit.instance == 1)
         cloth.scatter(surface, state);
+    else if (hit.instance == 5)
+        glass.scatter(surface, state);
+    else if (hit.instance == 3)
+        glass.scatter(surface, state);
     else
         diffuse.scatter(surface, state);
 }
@@ -277,5 +279,7 @@ void closest_hit_entry(inout State payload, BuiltInTriangleIntersectionAttribute
 
     mat(hit, surface, payload);
     payload.ray.Origin = safe_pos;
+    var seed = hit.instance;
+    // payload.color = random::f3(seed);
     payload.hit = true;
 }
