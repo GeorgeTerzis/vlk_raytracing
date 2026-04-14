@@ -25,11 +25,11 @@ pub fn build(b: *std.Build) void {
         b.getInstallStep().dependOn(&compile_shaders.step);
     }
 
-    const mth = b.addModule("mth", .{
-        .root_source_file = b.path("src/mth.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
+    // const mth = b.addModule("mth", .{
+    //     .root_source_file = b.path("src/mth.zig"),
+    //     .target = target,
+    //     .optimize = optimize,
+    // });
 
     const emma = b.addModule("emma", .{
         .root_source_file = b.path("src/root.zig"),
@@ -69,7 +69,7 @@ pub fn build(b: *std.Build) void {
     exe.linkSystemLibrary("sdl3");
     exe.addLibraryPath(b.path("vk_deps/cxx_vma"));
 
-    emma.addImport("mth", mth);
+    // emma.addImport("mth", mth);
     emma.addImport("obj", obj_mod);
     emma.addImport("vulkan", vulkan.module("vulkan-zig"));
     emma.addImport("sdl3", sdl3.module("sdl3"));

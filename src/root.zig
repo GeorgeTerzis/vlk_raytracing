@@ -1,7 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-pub const mth = @import("mth");
+// pub const mth = @import("mth");
 pub const obj = @import("obj");
 pub const zigimg = @import("zigimg");
 pub const sdl = @import("sdl3");
