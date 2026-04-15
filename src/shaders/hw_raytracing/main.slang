@@ -23,7 +23,7 @@ struct Tri {
 
 struct Primitive {
     Tri tri;
-    float3  norm;
+    float3 norm;
     float3 geometric_norm;
 
     static Primitive make(PC_.Buffers buffer, uint primitive, float2 bary) {
@@ -33,11 +33,9 @@ struct Primitive {
         let vi1 = buffer.indicies[base + 1];
         let vi2 = buffer.indicies[base + 2];
 
-
         let ni0 = buffer.normals_indicies[base + 0];
         let ni1 = buffer.normals_indicies[base + 1];
         let ni2 = buffer.normals_indicies[base + 2];
-
 
         let v0 = buffer.verts[vi0];
         let v1 = buffer.verts[vi1];
@@ -47,7 +45,7 @@ struct Primitive {
         let n1 = buffer.norms[ni1];
         let n2 = buffer.norms[ni2];
 
-        float3 smooth_normal = n0 * (1.0 - bary.x - bary.y) + n1 * bary.x + n2 * bary.y;
+        float3 smooth_normal = bary_interpolate(n0, n1, n2, bary);
         let tri = Tri(v0, v1, v2);
         return Primitive(tri, smooth_normal, tri.normal());
     }
@@ -84,12 +82,13 @@ struct PC_ {
     Range* ranges;
 };
 
-struct Emision : Material {
-    float3 albedo;
+struct Emission : Material {
+    float3 color;
     float strength;
 
     void scatter(Surface surface, inout State payload) {
-        payload.color += payload.throughput * albedo * strength;
+        payload.color += payload.throughput * (color * strength);
+        payload.hit = false;
     }
 };
 
@@ -147,18 +146,21 @@ RaytracingAccelerationStructure tlas;
 [[vk::binding(1, 0)]]
 RWTexture2D<float4> output;
 
+
 [shader("raygeneration")]
 void raygen_entry() {
     let coord = DispatchRaysIndex().xy;
-    uint seed = coord.x * 1973 + coord.y * 9277 + (pc.frame) * 26699;
+
     static let SPP = 1;
+
     var s = uint(0);
     var accumilator = float3(0);
+    var seed = coord.x * 1973 + coord.y * 9277 + (pc.frame) * 26699;
     for (; s < SPP; s++) {
         let jitter = float2(random::unit(seed), random::unit(seed));
         let uv = (float2(coord) + jitter - (pc.res * 0.5)) / (pc.res.y);
 
-        let ray_origin = float3(-1.3, 1.5, 9.0);
+        let ray_origin = float3(0, 1.5, 9.0);
         let dir = normalize(float3(uv.x, -uv.y, -1.0));
 
         RayDesc ray;
@@ -169,20 +171,25 @@ void raygen_entry() {
 
         var payload = State(0, 1, false, seed, ray, 0);
         for (; payload.bounce < State::BOUNCES; payload.bounce++) {
+
             payload.hit = false;
+
             TraceRay(tlas, RAY_FLAG_NONE, 0xFF, 0, 0, 0, payload.ray, payload);
 
-            if (!payload.hit)
+            if (!payload.hit) {
                 break;
+            }
+
             let p = max(luminance(payload.throughput), 0.01);
-            if (random::unit(payload.seed) > p)
+            if (random::unit(payload.seed) > p) {
                 break;
+            }
             payload.throughput /= p;
+
         }
         let color = payload.color;
         accumilator += color;
     }
-
     let color = accumilator / SPP;
 
     float4 prev = output[coord];
@@ -192,7 +199,7 @@ void raygen_entry() {
 
 [shader("miss")]
 void miss_entry(inout State payload) {
-    payload.color += payload.throughput * (float3(0.6, 0.8, 1) * 2);
+    payload.color = payload.throughput * float3(0.6, 0.6, 1) * 1;
     payload.hit = false;
 }
 
@@ -219,44 +226,35 @@ struct HitInfo {
         return make(GeometryIndex(), InstanceIndex(), PrimitiveIndex(), HitPos());
     }
 };
-struct Diffuse : Material {
-    float3 albedo;
 
-    void scatter(Surface surface, inout State payload) {
-        // cosine-weighted hemisphere sampling around the normal
-        float3 dir = cosine_hemisphere(surface.normal, payload.seed);
-
-        // update ray
-        payload.ray.Direction = normalize(dir);
-
-        // move energy forward
-        payload.throughput *= albedo;
-    }
-};
 void mat(const HitInfo hit, const Surface surface, inout State state) {
     let glass = Glass(float3(1), 1.5, 0.0);
 
-    let cloth_diffuse = Principled::diffuse_pararms(float3(1, 0.1, 0.1), 0);
-    let cloth_sheen = Principled::sheen_params(10, 0);
-    let cloth = Principled(0.5, 0, cloth_diffuse, cloth_sheen);
+    let cloth_diffuse = Principled::diffuse_pararms(0);
+    let cloth_sheen = Principled::sheen_params(100, 0);
+    let cloth = Principled(float3(0.8, 0.5, 0.2), 0.5, 0, cloth_diffuse, cloth_sheen);
 
-    let diffuse_dif = Principled::diffuse_pararms(float3(1), 0);
-    let diffuse_specular = Principled::specular_params(1, 1, float3(1, 0, 0));
-    let diffuse = Principled(0.5, 0, diffuse_dif, {}, diffuse_specular, {});
+    let diffuse_dif = Principled::diffuse_pararms(0);
+    let diffuse_specular = Principled::specular_params(1, 1);
+    let diffuse = Principled(float3(0.8), 0.2, 0, diffuse_dif, {}, diffuse_specular, {});
 
-    let mirror_specular = Principled::specular_params(0, 0, float3(1));
-    let mirror = Principled(0.0, 1, {}, {}, mirror_specular, {});
+    let mirror_specular = Principled::specular_params(0, 0);
+    let mirror = Principled(float3(1, 0, 0.5), 0.0, 1, {}, {}, mirror_specular, {});
+    let light = Emission(float3(0.1, 0.2, 0.9), 100);
 
     if (hit.instance == 0)
         mirror.scatter(surface, state);
-    else if (hit.instance == 1) {
+    else if (hit.instance == 4)
+        glass.scatter(surface, state);
+    else if (hit.instance == 1)
         cloth.scatter(surface, state);
-    } else if (hit.instance == 5)
-        mirror.scatter(surface, state);
+    else if (hit.instance == 5)
+        glass.scatter(surface, state);
     else if (hit.instance == 3)
         glass.scatter(surface, state);
     else
         diffuse.scatter(surface, state);
+    state.hit = true;
 }
 
 [shader("closesthit")]
@@ -272,7 +270,4 @@ void closest_hit_entry(inout State payload, BuiltInTriangleIntersectionAttribute
 
     mat(hit, surface, payload);
     payload.ray.Origin = safe_pos;
-    var seed = hit.instance;
-    // payload.color = random::f3(seed);
-    payload.hit = true;
 }

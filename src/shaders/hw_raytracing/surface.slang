@@ -13,10 +13,7 @@ public struct Surface {
 public static Surface make(float3 geometric_normal, float3 raw_normal) {
     float3 geoN = normalize(geometric_normal);
     float3 n = normalize(raw_normal);
-
     let is_backface = dot(WorldRayDirection(), geoN) > 0.0;
-
-    // ensure raw normal is consistent with geometric orientation
     if (dot(n, geoN) < 0.0)
         n = -n;
 

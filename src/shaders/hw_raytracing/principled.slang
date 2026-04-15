@@ -139,15 +139,16 @@ public struct VNDF {
         return (D * G1) / (NoV * 4.0f);
     }
     static public float SmithGGXMasking(float3 wi, float3 wo, float a2) {
-        float dotNL = BsdfNDot(wi);
-        float dotNV = BsdfNDot(wo);
+        float dotNL = (BsdfNDot(wi));
+        float dotNV = (BsdfNDot(wo));
 
         float denomC = sqrt(a2 + (1.0f - a2) * dotNV * dotNV) + dotNV;
         return 2.0f * dotNV / denomC;
     }
     static public float SmithGGXMaskingShadowing(float3 wi, float3 wo, float a2) {
-        float dotNL = BsdfNDot(wi);
-        float dotNV = BsdfNDot(wo);
+        //do we allow negative value
+        float dotNL = max(BsdfNDot(wi), 1e-5);
+        float dotNV = max(BsdfNDot(wo), 1e-5);
         float denomA = dotNV * sqrt(a2 + (1.0f - a2) * dotNL * dotNL);
         float denomB = dotNL * sqrt(a2 + (1.0f - a2) * dotNV * dotNV);
 
@@ -175,7 +176,6 @@ public struct Principled : Material {
     };
 
     public struct diffuse_pararms {
-        public float3 color = float3(0.8);
         public float subsurface = 0;
     };
 
@@ -187,7 +187,6 @@ public struct Principled : Material {
     public struct specular_params {
         public float weight = 0;
         public float tint = 0;
-        public float3 tint_color = 0;
     };
 
     public struct clearcoat_params {
@@ -195,6 +194,7 @@ public struct Principled : Material {
         public float gloss = 1;
     };
 
+    public float3 color = 1;
     public float roughness = 0.5;
     public float metallic = 0;
 
@@ -202,7 +202,6 @@ public struct Principled : Material {
     public sheen_params psheen;
     public specular_params pspecular;
     public clearcoat_params pclearcoat;
-
 
     struct Diffuse {
         static float3 sample_direction(float3 normal, inout uint seed) {
@@ -212,7 +211,7 @@ public struct Principled : Material {
             return NoL / PI;
         }
         static float Fd_90(float roughness, float3 half, float3 dir) {
-            return (1.0 / 2.0) + 2 * roughness* pow(dot(dir, half), 2);
+            return (1.0 / 2.0) + 2 * roughness * pow(dot(dir, half), 2);
         }
         static float Fd(float roughness, float3 n, float3 w, float3 h, float3 wo) {
             float ndw = abs(dot(n, w));
@@ -227,7 +226,7 @@ public struct Principled : Material {
                                    float3 half) {
             let fd_out = Fd(roughness, n, view, half, dir);
             let fd_in = Fd(roughness, n, dir, half, view);
-            let f = (albedo)*fd_in * fd_out;
+            let f = albedo * fd_in * fd_out;
             return f;
         }
 
@@ -265,38 +264,33 @@ public struct Principled : Material {
     };
 
     struct Sheen {
-        static float3 Csheen(float3 albedo, float sheen_tint) {
-            let ctint = luminance(albedo) > 0.0 ? albedo / luminance(albedo) : float3(1);
-            return (1.0 - sheen_tint) + sheen_tint * ctint;
+        static float3 Ctint(float3 color) {
+            let lum = luminance(color);
+            return (lum > 0) ? color / lum : 1;
+        }
+        static float3 Csheen(float3 color, float3 tint) {
+            return (1 - tint) + tint * Ctint(color);
         }
 
-        static float3 bsdf(float3 albedo, float sheen_tint, float HoV) {
-            let schlick = pow(1.0 - HoV, 5.0);
-            return Csheen(albedo, sheen_tint) * schlick;
-        }
-
-        static float3 eval(float3 albedo,
-                           float sheen_weight,
-                           float sheen_tint,
-                           float3 normal,
-                           float3 half,
-                           float3 view,
-                           float3 dir) {
-            if (sheen_weight <= 0.0)
-                return float3(0);
-            let NoL = max(dot(normal, dir), 1e-5);
-            let HoL = max(dot(half, dir), 1e-5);
-            return (sheen_weight)*bsdf(albedo, sheen_tint, HoL);
+        static float3
+        Fsheen(Surface surface, float3 color, sheen_params params, float HoV) {
+            return Csheen(color, params.tint) * pow(1 - HoV, 5);
         }
     };
 
     public void scatter(Surface surface, inout State state) {
         let view = -state.ray.Direction;
         let NoV = max(dot(surface.normal, view), 1e-5);
-        let albedo = pdiffuse.color;
-        let lum = dot(albedo, float3(0.2126, 0.7152, 0.0722));
-        let ed = (1.0 - metallic) * lum;
-        let es = lerp(0.04, 1.0, metallic);
+
+        let lum = dot(color, float3(0.2126, 0.7152, 0.0722));
+        float3 F0 = lerp(float3(0.04), color, metallic);
+        float spec_weight = luminance(F0);
+
+        let es = spec_weight;
+        let ed = (1.0 - metallic);
+        // let ed = (1.0 - metallic);
+        // let es = metallic;
+
         let ec = 0.04 * pclearcoat.weight;
         let total = max(ed + es + ec, 1e-6);
 
@@ -311,82 +305,69 @@ public struct Principled : Material {
             let half = normalize(view + dir);
 
             let NoL = max(dot(surface.normal, dir), 1e-5);
-            let diffuse = Diffuse::diffuse_bsdf(pdiffuse.color,
-                                                roughness,
-                                                surface.normal,
-                                                view,
-                                                dir,
-                                                half);
-            let subsurface = Diffuse::subsurface_bsdf(pdiffuse.color,
+            let diffuse =
+                Diffuse::diffuse_bsdf(color, roughness, surface.normal, view, dir, half);
+            let subsurface = Diffuse::subsurface_bsdf(color,
                                                       roughness,
                                                       surface.normal,
                                                       view,
                                                       dir,
                                                       half);
-            let sheen = Sheen::eval(pdiffuse.color,
-                                    psheen.weight,
-                                    psheen.tint,
-                                    surface.normal,
-                                    half,
-                                    view,
-                                    dir);
+            let HoV = dot(half, view);
+            let sheen = Sheen::Fsheen(surface, color, psheen, HoV);
 
             let d =
                 (1 - pdiffuse.subsurface) * diffuse + pdiffuse.subsurface * subsurface;
-
             let base = d;
             let sheen_term = psheen.weight * sheen;
-
-            let f = (base + sheen_term) / PI;
-
+            let f = (base + sheen_term);
             let pdf = Diffuse::sample_pdf(NoL);
-            if (pdf < 1e-6) {
+            if (pdf <= 1e-5f) {
                 state.throughput = float3(0);
                 return;
             }
-
             state.throughput *= f * NoL / (pdf * pd);
             state.ray.Direction = dir;
         } else if (r < pd + ps) {
-            let a = roughness;
+            let a = max(roughness * roughness, 0.0);
             let a2 = a * a;
             let wo_local = to_local_vndf(view, surface);
+
             let wm_local = VNDF::GgxVndf(wo_local, a, u);
             let wi_local = reflect(-wo_local, wm_local);
             let wi_world = to_world_vndf(wi_local, surface);
 
             state.ray.Direction = wi_world;
-            if (BsdfNDot(wi_local) <= 0.0f) {
-                state.throughput *= float3(0);
+            if (BsdfNDot(wi_local) <= 1e-5f) {
+                state.throughput = float3(0);
                 return;
             }
             let VoH = max(dot(wi_local, wm_local), 1e-5);
-            let specular_color = float3(1.0, 0.71, 0.29);
-
-            float3 F0 = lerp(float3(0.04), pspecular.tint_color, metallic);
+            float3 F0 = lerp(float3(0.04), color, metallic);
             float3 F = fresnel(F0, VoH);
 
             let G1 = VNDF::SmithGGXMasking(wi_local, wo_local, a2);
             let G2 = VNDF::SmithGGXMaskingShadowing(wi_local, wo_local, a2);
-            state.throughput *= (F * (G2 / G1)) / ps;
-        } else  {
-            let a = Clearcoat::ag(pclearcoat.gloss);
+            state.throughput *= (F * (G2 / G1)) / (1);
+        } else {
+            let a = max(Clearcoat::ag(pclearcoat.gloss), 0.02);
             let a2 = a * a;
             let wo_local = to_local_vndf(view, surface);
             let wm_local = VNDF::GgxVndf(wo_local, a, u);
             let wi_local = reflect(-wo_local, wm_local);
             let wi_world = to_world_vndf(wi_local, surface);
             state.ray.Direction = wi_world;
-            if (BsdfNDot(wi_local) <= 0.0f) {
-                state.throughput *= float3(0);
+
+            if (BsdfNDot(wi_local) <= 1e-5f) {
+                state.throughput = float3(0);
                 return;
             }
 
-            let VoH = max(dot(wo_local, wm_local), 1e-5);
+            let VoH = max(dot(wi_local, wm_local), 1e-5);
             static let F0 = Clearcoat::R0(1.5);
             let F = fresnel(F0, VoH);
 
-            let G1 = VNDF::SmithGGXMasking(wi_local, wo_local, a2);
+            let G1 = max(VNDF::SmithGGXMasking(wi_local, wo_local, a2), 1e-5);
             let G2 = VNDF::SmithGGXMaskingShadowing(wi_local, wo_local, a2);
             state.throughput *= (pclearcoat.weight * F * (G2 / G1)) / pc;
         }
