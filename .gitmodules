@@ -1,0 +1,3 @@
+[submodule "vk_deps/stb"]
+	path = vk_deps/stb
+	url = https://github.com/nothings/stb

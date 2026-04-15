@@ -1,0 +1,23 @@
+# Created by https://www.toptal.com/developers/gitignore/api/zig
+# Edit at https://www.toptal.com/developers/gitignore?templates=zig
+
+### zig ###
+# Zig programming language
+src/shaders/raytracing_recursive
+src/shaders/hwrt_backup
+src/shaders/noise
+src/mth
+
+*.spv
+
+zig-cache/
+zig-out/
+build/
+build-*/
+docgen_tmp/
+
+out
+*.png
+*.exr
+
+# End of https://www.toptal.com/developers/gitignore/api/zig
