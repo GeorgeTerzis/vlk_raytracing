@@ -128,6 +128,8 @@ pub fn main() !void {
         try geometry_storage.append(allocator, geometry);
     }
 
+    // Idealy user controled
+    // along with a transformation list
     const blas0 = [_]u32{0};
     const blas1 = [_]u32{1};
     const blas2 = [_]u32{2};
@@ -179,6 +181,19 @@ pub fn main() !void {
             try blas_list.append(allocator, blas);
         }
         std.debug.print("created BLAS structures in {d:.2}ms\n", .{emma.ns_to_ms(timer.lap())});
+    }
+
+    // have this user controled
+    var instance_transforms = try std.ArrayList(vk.TransformMatrixKHR).initCapacity(allocator, 10);
+    for (blas_list.items) |b| {
+        _ = b;
+        try instance_transforms.append(allocator, .{
+            .matrix = .{
+                .{ 1, 0, 0, 0 },
+                .{ 0, 1, 0, 0 },
+                .{ 0, 0, 1, 0 },
+            },
+        });
     }
 
     try gp.begin();
@@ -268,18 +283,6 @@ pub fn main() !void {
         .geometries = geometry_buffer.address(&u.device),
         .ranges = range_buffer.address(&u.device),
     };
-
-    var instance_transforms = try std.ArrayList(vk.TransformMatrixKHR).initCapacity(allocator, 10);
-    for (blas_list.items) |b| {
-        _ = b;
-        try instance_transforms.append(allocator, .{
-            .matrix = .{
-                .{ 1, 0, 0, 0 },
-                .{ 0, 1, 0, 0 },
-                .{ 0, 0, 1, 0 },
-            },
-        });
-    }
 
     const tlas = try emma.raytracing_acceleration_structure.init_tlas(
         allocator,

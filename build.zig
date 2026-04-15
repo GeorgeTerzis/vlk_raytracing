@@ -54,8 +54,10 @@ pub fn build(b: *std.Build) void {
     const obj_mod = b.dependency("obj", .{ .target = target, .optimize = optimize }).module("obj");
 
     exe.addCSourceFile(.{
-        .file = b.path("vk_deps/tinyexr/tinyexr_impl.cpp"),
-        .flags = &.{"-std=c++11"},
+        .file = b.path("vk_deps/tinyexr/tinyexr.cc"),
+        .flags = &.{
+            "-std=c++11",
+        },
     });
     exe.addCSourceFile(.{
         .file = b.path("vk_deps/tinyexr/miniz.c"),
@@ -67,6 +69,7 @@ pub fn build(b: *std.Build) void {
     exe.linkSystemLibrary("vma");
     exe.linkSystemLibrary("vulkan");
     exe.linkSystemLibrary("sdl3");
+    exe.linkSystemLibrary("z");
     exe.addLibraryPath(b.path("vk_deps/cxx_vma"));
 
     // emma.addImport("mth", mth);
