@@ -3,10 +3,8 @@ const builtin = @import("builtin");
 
 // pub const mth = @import("mth");
 pub const obj = @import("obj");
-pub const zigimg = @import("zigimg");
 pub const sdl = @import("sdl3");
 pub const vk = @import("vulkan");
-
 pub const mesh = @import("mesh.zig");
 
 pub const c_vma = @cImport({

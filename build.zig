@@ -47,10 +47,10 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .callbacks = false,
     });
-    const zigimg = b.dependency("zigimg", .{
-        .target = target,
-        .optimize = optimize,
-    });
+    // const zigimg = b.dependency("zigimg", .{
+    //     .target = target,
+    //     .optimize = optimize,
+    // });
     const obj_mod = b.dependency("obj", .{ .target = target, .optimize = optimize }).module("obj");
 
     exe.addCSourceFile(.{
@@ -63,7 +63,7 @@ pub fn build(b: *std.Build) void {
         .file = b.path("vk_deps/tinyexr/miniz.c"),
     });
 
-    exe.root_module.addImport("zigimg", zigimg.module("zigimg"));
+    // exe.root_module.addImport("zigimg", zigimg.module("zigimg"));
     exe.root_module.addImport("emma", emma);
     exe.linkLibCpp();
     exe.linkSystemLibrary("vma");
