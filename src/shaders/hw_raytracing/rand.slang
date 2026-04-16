@@ -1,9 +1,6 @@
 module rand;
 
 public struct random {
-    public struct seed {
-        uint val;
-    };
     public static uint pcg_hash(inout uint v) {
         v = v * 747796405u + 2891336453u;
         v = ((v >> ((v >> 28u) + 4u)) ^ v) * 277803737u;
@@ -24,8 +21,12 @@ public struct random {
         return min + (max - min) * n;
     }
 
+    public static float2 f2(inout uint seed) {
+        return {unit(seed), unit(seed)};
+    }
+
     public static float3 f3(inout uint seed) {
-        return float3(unit(seed), unit(seed), unit(seed));
+        return {unit(seed), unit(seed), unit(seed)};
     }
 };
 

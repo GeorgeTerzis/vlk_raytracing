@@ -3,8 +3,10 @@ const builtin = @import("builtin");
 
 // pub const mth = @import("mth");
 pub const obj = @import("obj");
+// pub const zigimg = @import("zigimg");
 pub const sdl = @import("sdl3");
 pub const vk = @import("vulkan");
+
 pub const mesh = @import("mesh.zig");
 
 pub const c_vma = @cImport({
@@ -556,9 +558,9 @@ pub const vlk_swapchain = struct {
 
             const present_modes = try vki.instance.getPhysicalDeviceSurfacePresentModesAllocKHR(device.physical_device, window.surface_khr(), allocator);
             defer allocator.free(present_modes);
-            var chosen_present_mode = vk.PresentModeKHR.fifo_khr;
+            var chosen_present_mode = vk.PresentModeKHR.immediate_khr;
             for (present_modes) |pm| {
-                if (pm == .fifo_relaxed_khr) {
+                if (pm == .shared_continuous_refresh_khr) {
                     chosen_present_mode = pm;
                     break;
                 }
@@ -2461,3 +2463,29 @@ pub const vlk_fence_pool = struct {
         self.in_use.deinit(self.allocator);
     }
 };
+
+pub const TileElm = struct {
+    pos: u32,
+    stride: u32,
+    len: u32,
+};
+
+pub fn next_tile(t: u32, desired_stride: u32, max: u32) TileElm {
+    const stride: u32 = blk: {
+        const diff = @as(i32, @intCast(max)) - @as(i32, @intCast(t));
+        if (diff > 0) {
+            break :blk @min(@as(u32, @intCast(diff)), desired_stride);
+        } else {
+            return .{ .pos = 0, .stride = desired_stride, .len = desired_stride };
+        }
+    };
+    const pos = t + stride;
+    const len: u32 = blk: {
+        const next_pos = pos + desired_stride;
+        if (next_pos > max) {
+            break :blk max - pos;
+        }
+        break :blk desired_stride;
+    };
+    return .{ .pos = pos, .stride = stride, .len = len };
+}

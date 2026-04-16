@@ -5,9 +5,15 @@ import principled;
 import surface;
 import material;
 
-float3 bary_interpolate(float3 v0, float3 v1, float3 v2, float2 bary) {
-    return v0 * (1.0 - bary.x - bary.y) + v1 * bary.x + v2 * bary.y;
-}
+struct Screen {
+    uint3 resolution;
+    uint3 coords;
+
+    static Screen make(uint3 coords) {
+        let resolution = DispatchRaysDimensions();
+        return { resolution, coords };
+    }
+};
 
 struct Tri {
     float3 v0;
@@ -77,6 +83,8 @@ struct PC_ {
     float time;
     uint frame;
 
+    uint2 pos;
+
     Buffers* buffers;
     Geometry* geometries;
     Range* ranges;
@@ -107,8 +115,7 @@ struct Glass : Material {
         if (!is_backface) {
             eta = 1.0 / ior;
         } else {
-            let distance = 1 - RayTCurrent();
-            // payload.throughput *= exp(-absorbtion * distance );
+            payload.throughput *= absorbtion;
         }
 
         let cos_theta = min(dot(-I, N), 1.0);
@@ -146,19 +153,19 @@ RaytracingAccelerationStructure tlas;
 [[vk::binding(1, 0)]]
 RWTexture2D<float4> output;
 
-
 [shader("raygeneration")]
 void raygen_entry() {
-    let coord = DispatchRaysIndex().xy;
+    static let SAMPLES_PER_PIXEL = 40;
 
-    static let SPP = 1;
+    let screen = Screen::make(uint3(pc.pos, 0) + DispatchRaysIndex());
+    var seed = screen.coords.x * 1973 + screen.coords.y * 9277 + (pc.frame) * 26699;
 
-    var s = uint(0);
+    var sample = uint(0);
     var accumilator = float3(0);
-    var seed = coord.x * 1973 + coord.y * 9277 + (pc.frame) * 26699;
-    for (; s < SPP; s++) {
-        let jitter = float2(random::unit(seed), random::unit(seed));
-        let uv = (float2(coord) + jitter - (pc.res * 0.5)) / (pc.res.y);
+    for (; sample < SAMPLES_PER_PIXEL; sample++) {
+        let jitter = random::f2(seed);
+        let uv =
+            (float2(screen.coords.xy) + jitter - (pc.res.xy * 0.5)) / (pc.res.y);
 
         let ray_origin = float3(0, 1.5, 9.0);
         let dir = normalize(float3(uv.x, -uv.y, -1.0));
@@ -169,8 +176,10 @@ void raygen_entry() {
         ray.TMin = 0.00001;
         ray.TMax = 10000.0;
 
-        var payload = State(0, 1, false, seed, ray, 0);
-        for (; payload.bounce < State::BOUNCES; payload.bounce++) {
+        var bounce = 0;
+        var payload = State(ray, float3(0), float3(1), seed, false);
+
+        for (; bounce < State::BOUNCES; bounce++) {
 
             payload.hit = false;
 
@@ -185,16 +194,15 @@ void raygen_entry() {
                 break;
             }
             payload.throughput /= p;
-
         }
         let color = payload.color;
         accumilator += color;
     }
-    let color = accumilator / SPP;
+    let color = accumilator / SAMPLES_PER_PIXEL;
 
-    float4 prev = output[coord];
+    float4 prev = output[screen.coords.xy];
     float weight = 1.0 / float(pc.frame + 1);
-    output[coord] = float4(lerp(prev.rgb, color, weight), 1.0);
+    output[screen.coords.xy] = float4(lerp(prev.rgb, color, weight), 1.0);
 }
 
 [shader("miss")]
@@ -228,11 +236,16 @@ struct HitInfo {
 };
 
 void mat(const HitInfo hit, const Surface surface, inout State state) {
-    let glass = Glass(float3(1), 1.5, 0.0);
+    let glass = Glass(float3(1, 1, 1), 1.5, 0.2);
 
     let cloth_diffuse = Principled::diffuse_pararms(0);
-    let cloth_sheen = Principled::sheen_params(100, 0);
-    let cloth = Principled(float3(0.8, 0.5, 0.2), 0.5, 0, cloth_diffuse, cloth_sheen);
+    let cloth_sheen = Principled::sheen_params(hit.pos.x > 0 ? 10 : 0, 0);
+    let cloth = Principled(
+        hit.pos.x > 0 ? float3(0.8, 0.5, 0.2) - 0.2 : float3(0.2, 0.5, 0.8) - 0.2,
+        0.5,
+        0,
+        cloth_diffuse,
+        cloth_sheen);
 
     let diffuse_dif = Principled::diffuse_pararms(0);
     let diffuse_specular = Principled::specular_params(1, 1);
@@ -240,13 +253,13 @@ void mat(const HitInfo hit, const Surface surface, inout State state) {
 
     let mirror_specular = Principled::specular_params(0, 0);
     let mirror = Principled(float3(1, 0, 0.5), 0.0, 1, {}, {}, mirror_specular, {});
-    let light = Emission(float3(0.1, 0.2, 0.9), 100);
+    let light = Emission(float3(0.1, 0.2, 0.9), 10);
 
     if (hit.instance == 0)
         mirror.scatter(surface, state);
-    else if (hit.instance == 4)
+    else if (hit.instance == 4) {
         glass.scatter(surface, state);
-    else if (hit.instance == 1)
+    } else if (hit.instance == 1)
         cloth.scatter(surface, state);
     else if (hit.instance == 5)
         glass.scatter(surface, state);
@@ -258,7 +271,8 @@ void mat(const HitInfo hit, const Surface surface, inout State state) {
 }
 
 [shader("closesthit")]
-void closest_hit_entry(inout State payload, BuiltInTriangleIntersectionAttributes attr) {
+void closest_hit_entry(inout State payload,
+                       const BuiltInTriangleIntersectionAttributes attr) {
     let hit = HitInfo::from_current_hit();
     let range = pc.ranges[hit.instance];
     let geometry = pc.geometries[range.begin + hit.geometry];

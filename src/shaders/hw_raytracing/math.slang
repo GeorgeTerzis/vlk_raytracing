@@ -35,4 +35,23 @@ public float3 any_perpendicular(float3 n) {
                                          : (float3(0.0, -n.z, n.y)));
 }
 
+public float3 bary_interpolate(float3 v0, float3 v1, float3 v2, float2 bary) {
+    return v0 * (1.0 - bary.x - bary.y) + v1 * bary.x + v2 * bary.y;
+}
+public float schlick_weight(float cos_theta, float p) {
+    float m = saturate(1.0 - cos_theta);
+    return pow(m, p);
+}
 
+public float schlick_weight(float cos_theta) {
+    float m = saturate(1.0 - cos_theta);
+    return pow(m, 5);
+}
+
+public T fresnel<T : IFloat>(T f0, float cos_theta) {
+    return f0 + (T(1.0) - f0) * T(pow(1.0 - cos_theta, 5.0));
+}
+
+public float luminance(float3 c) {
+    return dot(c, float3(0.2126, 0.7152, 0.0722));
+}

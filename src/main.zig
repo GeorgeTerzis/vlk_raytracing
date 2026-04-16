@@ -29,6 +29,9 @@ const PC = extern struct {
     time: f32,
     frame: u32,
 
+    posx: u32,
+    posy: u32,
+
     buffers: u64,
     geometries: u64,
     ranges: u64,
@@ -55,7 +58,7 @@ pub fn main() !void {
     const allocator: std.mem.Allocator = std.heap.c_allocator;
     var key_state = std.mem.zeroes([sdl.c.SDL_SCANCODE_COUNT]bool);
 
-    const width: usize = 3440;
+    const width: usize = 1440;
     const height: usize = 1440;
 
     var u = try emma.vlk_unit.init(allocator, width, height);
@@ -279,6 +282,8 @@ pub fn main() !void {
         .width = 0,
         .time = 0,
         .frame = 0,
+        .posx = 0,
+        .posy = 0,
         .buffers = buffers.address(&u.device),
         .geometries = geometry_buffer.address(&u.device),
         .ranges = range_buffer.address(&u.device),
@@ -498,6 +503,12 @@ pub fn main() !void {
 
             var mouse = mouse_state{ .x = 0, .y = 0 };
 
+            const tile_strides = [2]u32{ 100, 100 };
+            var tile_offsets = [2]emma.TileElm{
+                .{ .pos = 0, .stride = tile_strides[0], .len = tile_strides[0] },
+                .{ .pos = 0, .stride = tile_strides[1], .len = tile_strides[1] },
+            };
+            var done = false;
             while (!quit) {
                 // Event handling
                 {
@@ -533,7 +544,7 @@ pub fn main() !void {
                 {
                     try emma.vlk_cmd_begin_one(frame.cmd);
                     // rendering
-                    if (samples <= 1000) {
+                    if (!done) {
                         frame.cmd.bindPipeline(.ray_tracing_khr, pipeline.pipeline.pipeline);
                         frame.cmd.bindDescriptorSets(
                             .ray_tracing_khr,
@@ -549,6 +560,8 @@ pub fn main() !void {
                             pc2.width = @intCast(width);
                             pc2.height = @intCast(height);
                             pc2.time = time;
+                            pc2.posx = tile_offsets[0].pos;
+                            pc2.posy = tile_offsets[1].pos;
                             pc2.frame = frame_counter;
                         }
                         frame.cmd.pushConstants(
@@ -567,145 +580,164 @@ pub fn main() !void {
                             &pipeline.sbt.miss_region,
                             &pipeline.sbt.hit_region,
                             &pipeline.sbt.callable_region,
-                            @intCast(width),
-                            @intCast(height),
+                            @intCast(tile_offsets[0].len),
+                            @intCast(tile_offsets[1].len),
                             1,
                         );
-                        samples += 1;
                     } else {
-                        quit = true;
+                        // quit = true;
                     }
-                    const result = try u.device.logical_device.acquireNextImageKHR(
-                        swapchain.handle,
-                        std.math.maxInt(u64),
-                        acquire_semaphore,
-                        .null_handle,
-                    );
-                    const image_index = result.image_index;
-                    const prev = image_available[image_index];
-                    image_available[image_index] = acquire_semaphore;
-                    acquire_semaphore = if (prev != .null_handle) prev else try u.device.logical_device.createSemaphore(&.{}, null);
-                    const wait_semaphore = image_available[image_index];
-                    const swapchain_image = swapchain.images[image_index];
 
-                    // presenting
-                    {
-                        render_texture.cmd_transition(
-                            frame.cmd,
-                            .{ .compute_shader_bit = true },
-                            .{ .all_transfer_bit = true },
-                            .{ .shader_write_bit = true },
-                            .{ .transfer_read_bit = true },
-                            .general, //from
-                            .transfer_src_optimal, //to
-                            null,
+                    tile_offsets[0] = emma.next_tile(tile_offsets[0].pos, tile_strides[0], render_texture_width);
+                    if (tile_offsets[0].pos == 0) {
+                        tile_offsets[1] = emma.next_tile(tile_offsets[1].pos, tile_strides[1], render_texture_height);
+                    }
+                    const frame_done = (tile_offsets[0].pos == 0 and tile_offsets[1].pos == 0);
+                    if (frame_done) {
+                        samples += 1;
+                        const result = try u.device.logical_device.acquireNextImageKHR(
+                            swapchain.handle,
+                            std.math.maxInt(u64),
+                            acquire_semaphore,
+                            .null_handle,
                         );
-                        swapchain_image.cmd_transition(
-                            frame.cmd,
-                            .{},
-                            .{ .all_transfer_bit = true },
-                            .{},
-                            .{ .transfer_write_bit = true },
-                            .undefined,
-                            .transfer_dst_optimal,
-                            null,
-                        );
+                        const image_index = result.image_index;
+                        const prev = image_available[image_index];
+                        image_available[image_index] = acquire_semaphore;
+                        acquire_semaphore = if (prev != .null_handle) prev else try u.device.logical_device.createSemaphore(&.{}, null);
+                        const wait_semaphore = image_available[image_index];
+                        const swapchain_image = swapchain.images[image_index];
+
+                        // Blit
                         {
-                            const blit_region = vk.ImageBlit2{
-                                .src_subresource = .{
-                                    .aspect_mask = .{ .color_bit = true },
-                                    .mip_level = 0,
-                                    .base_array_layer = 0,
-                                    .layer_count = 1,
-                                },
-                                .src_offsets = .{
-                                    .{ .x = 0, .y = 0, .z = 0 },
-                                    .{
-                                        .x = @intCast(render_texture.extent.width),
-                                        .y = @intCast(render_texture.extent.height),
-                                        .z = 1,
+                            render_texture.cmd_transition(
+                                frame.cmd,
+                                .{ .compute_shader_bit = true },
+                                .{ .all_transfer_bit = true },
+                                .{ .shader_write_bit = true },
+                                .{ .transfer_read_bit = true },
+                                .general, //from
+                                .transfer_src_optimal, //to
+                                null,
+                            );
+                            swapchain_image.cmd_transition(
+                                frame.cmd,
+                                .{},
+                                .{ .all_transfer_bit = true },
+                                .{},
+                                .{ .transfer_write_bit = true },
+                                .undefined,
+                                .transfer_dst_optimal,
+                                null,
+                            );
+                            {
+                                const blit_region = vk.ImageBlit2{
+                                    .src_subresource = .{
+                                        .aspect_mask = .{ .color_bit = true },
+                                        .mip_level = 0,
+                                        .base_array_layer = 0,
+                                        .layer_count = 1,
                                     },
-                                },
-                                .dst_subresource = .{
-                                    .aspect_mask = .{ .color_bit = true },
-                                    .mip_level = 0,
-                                    .base_array_layer = 0,
-                                    .layer_count = 1,
-                                },
-                                .dst_offsets = .{
-                                    .{ .x = 0, .y = 0, .z = 0 },
-                                    .{
-                                        .x = @intCast(swapchain.extent.width),
-                                        .y = @intCast(swapchain.extent.height),
-                                        .z = 1,
+                                    .src_offsets = .{
+                                        .{ .x = 0, .y = 0, .z = 0 },
+                                        .{
+                                            .x = @intCast(render_texture.extent.width),
+                                            .y = @intCast(render_texture.extent.height),
+                                            .z = 1,
+                                        },
                                     },
-                                },
-                            };
-                            frame.cmd.blitImage2(
-                                &.{
-                                    .src_image = render_texture.handle,
-                                    .src_image_layout = .transfer_src_optimal,
-                                    .dst_image = swapchain_image.handle,
-                                    .dst_image_layout = .transfer_dst_optimal,
-                                    .region_count = 1,
-                                    .p_regions = @ptrCast(&blit_region),
-                                    .filter = .linear,
-                                },
+                                    .dst_subresource = .{
+                                        .aspect_mask = .{ .color_bit = true },
+                                        .mip_level = 0,
+                                        .base_array_layer = 0,
+                                        .layer_count = 1,
+                                    },
+                                    .dst_offsets = .{
+                                        .{ .x = 0, .y = 0, .z = 0 },
+                                        .{
+                                            .x = @intCast(swapchain.extent.width),
+                                            .y = @intCast(swapchain.extent.height),
+                                            .z = 1,
+                                        },
+                                    },
+                                };
+                                frame.cmd.blitImage2(
+                                    &.{
+                                        .src_image = render_texture.handle,
+                                        .src_image_layout = .transfer_src_optimal,
+                                        .dst_image = swapchain_image.handle,
+                                        .dst_image_layout = .transfer_dst_optimal,
+                                        .region_count = 1,
+                                        .p_regions = @ptrCast(&blit_region),
+                                        .filter = .linear,
+                                    },
+                                );
+                            }
+                            swapchain_image.cmd_transition(
+                                frame.cmd,
+                                .{ .all_transfer_bit = true },
+                                .{ .bottom_of_pipe_bit = true },
+                                .{ .transfer_write_bit = true },
+                                .{},
+                                .transfer_dst_optimal,
+                                .present_src_khr,
+                                null,
+                            );
+                            render_texture.cmd_transition(
+                                frame.cmd,
+                                .{ .all_transfer_bit = true },
+                                .{ .compute_shader_bit = true },
+                                .{ .transfer_read_bit = true },
+                                .{ .shader_write_bit = true },
+                                .transfer_src_optimal,
+                                .general,
+                                null,
                             );
                         }
-                        swapchain_image.cmd_transition(
-                            frame.cmd,
-                            .{ .all_transfer_bit = true },
-                            .{ .bottom_of_pipe_bit = true },
-                            .{ .transfer_write_bit = true },
-                            .{},
-                            .transfer_dst_optimal,
-                            .present_src_khr,
-                            null,
-                        );
-                        render_texture.cmd_transition(
-                            frame.cmd,
-                            .{ .all_transfer_bit = true },
-                            .{ .compute_shader_bit = true },
-                            .{ .transfer_read_bit = true },
-                            .{ .shader_write_bit = true },
-                            .transfer_src_optimal,
-                            .general,
-                            null,
-                        );
-                    }
-                    try frame.cmd.endCommandBuffer();
-                    // Submit
-                    {
-                        const wait_stage = vk.PipelineStageFlags{ .all_commands_bit = true };
-                        const submit_info = [_]vk.SubmitInfo{
-                            .{
-                                .p_command_buffers = @ptrCast(&frame.cmd.handle),
-                                .command_buffer_count = 1,
-                                .wait_semaphore_count = 1,
-                                .p_wait_semaphores = @ptrCast(&wait_semaphore),
-                                .p_wait_dst_stage_mask = @ptrCast(&wait_stage),
-                                .signal_semaphore_count = 1,
-                                .p_signal_semaphores = @ptrCast(&render_finished[image_index]),
-                            },
-                        };
-                        try u.device.queue.submit(submit_info.len, &submit_info, frame.fence.handle);
-                    }
+                        try frame.cmd.endCommandBuffer();
+                        // Submit
+                        {
+                            const wait_stage = vk.PipelineStageFlags{ .all_commands_bit = true };
+                            const submit_info = [_]vk.SubmitInfo{
+                                .{
+                                    .p_command_buffers = @ptrCast(&frame.cmd.handle),
+                                    .command_buffer_count = 1,
+                                    .wait_semaphore_count = 1,
+                                    .p_wait_semaphores = @ptrCast(&wait_semaphore),
+                                    .p_wait_dst_stage_mask = @ptrCast(&wait_stage),
+                                    .signal_semaphore_count = 1,
+                                    .p_signal_semaphores = @ptrCast(&render_finished[image_index]),
+                                },
+                            };
+                            try u.device.queue.submit(submit_info.len, &submit_info, frame.fence.handle);
+                        }
 
-                    //Present
-                    {
-                        _ = try u.device.queue.presentKHR(&.{
-                            .wait_semaphore_count = 1,
-                            .p_wait_semaphores = @ptrCast(&render_finished[image_index]),
-                            .swapchain_count = 1,
-                            .p_swapchains = @ptrCast(&swapchain.handle),
-                            .p_image_indices = @ptrCast(&image_index),
-                        });
+                        //Present
+                        {
+                            _ = try u.device.queue.presentKHR(&.{
+                                .wait_semaphore_count = 1,
+                                .p_wait_semaphores = @ptrCast(&render_finished[image_index]),
+                                .swapchain_count = 1,
+                                .p_swapchains = @ptrCast(&swapchain.handle),
+                                .p_image_indices = @ptrCast(&image_index),
+                            });
+                        }
+                        frames.advance();
+                        frame_counter += 1;
+                    } else {
+                        try frame.cmd.endCommandBuffer();
+                        const submit_info = vk.SubmitInfo{
+                            .command_buffer_count = 1,
+                            .p_command_buffers = @ptrCast(&frame.cmd.handle),
+                            // no wait/signal semaphores
+                        };
+                        try u.device.queue.submit(1, &[1]vk.SubmitInfo{submit_info}, frame.fence.handle);
                     }
                 }
 
-                frames.advance();
-                frame_counter += 1;
+                if (samples > 1000) {
+                    done = true;
+                }
             }
 
             {
@@ -738,7 +770,7 @@ pub fn main() !void {
                     // try emma.vlk_cmd_begin_one(cmd);
                     render_texture.cmd_transition(
                         gp.cmd,
-                        .{ .compute_shader_bit = true },
+                        .{ .ray_tracing_shader_bit_khr = true },
                         .{ .all_transfer_bit = true },
                         .{ .shader_write_bit = true },
                         .{ .transfer_read_bit = true },
