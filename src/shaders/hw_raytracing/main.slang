@@ -155,7 +155,7 @@ RWTexture2D<float4> output;
 
 [shader("raygeneration")]
 void raygen_entry() {
-    static let SAMPLES_PER_PIXEL = 40;
+    static let SAMPLES_PER_PIXEL = 2;
 
     let screen = Screen::make(uint3(pc.pos, 0) + DispatchRaysIndex());
     var seed = screen.coords.x * 1973 + screen.coords.y * 9277 + (pc.frame) * 26699;

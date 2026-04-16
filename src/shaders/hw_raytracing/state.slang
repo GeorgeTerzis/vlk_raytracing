@@ -1,7 +1,7 @@
 module state;
 
 public struct State{
-    public static uint BOUNCES = 12;
+    public static uint BOUNCES = 5;
 
     public RayDesc ray;
 

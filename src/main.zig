@@ -58,7 +58,7 @@ pub fn main() !void {
     const allocator: std.mem.Allocator = std.heap.c_allocator;
     var key_state = std.mem.zeroes([sdl.c.SDL_SCANCODE_COUNT]bool);
 
-    const width: usize = 1440;
+    const width: usize = 3440;
     const height: usize = 1440;
 
     var u = try emma.vlk_unit.init(allocator, width, height);
@@ -472,14 +472,14 @@ pub fn main() !void {
             );
             defer frames.deinit(u.device.logical_device);
 
-            var fps_capper = sdl.extras.FramerateCapper(f32){ .mode = .{ .limited = 100 } };
+            // var fps_capper = sdl.extras.FramerateCapper(f64){ .mode = .{ .unlimited = {} } };
             var quit = false;
             const render_begin = std.time.milliTimestamp();
 
-            var now_ns = std.time.milliTimestamp() - render_begin;
-            var time: f32 = @as(f32, @floatFromInt(now_ns)) / 1000;
+            var time_ms = std.time.milliTimestamp() - render_begin;
+            var time_sec: f32 = @as(f32, @floatFromInt(time_ms)) / 1000;
 
-            var samples: u32 = 0;
+            var samples: i32 = 0;
 
             const image_available = try allocator.alloc(vk.Semaphore, swapchain.images.len);
             @memset(image_available, .null_handle);
@@ -503,11 +503,15 @@ pub fn main() !void {
 
             var mouse = mouse_state{ .x = 0, .y = 0 };
 
-            const tile_strides = [2]u32{ 100, 100 };
-            var tile_offsets = [2]emma.TileElm{
-                .{ .pos = 0, .stride = tile_strides[0], .len = tile_strides[0] },
-                .{ .pos = 0, .stride = tile_strides[1], .len = tile_strides[1] },
+            const tile_pixel_strides = [2]u32{ 500, 500 };
+            var tiles = [2]emma.TileElm{
+                emma.TileElm.init(tile_pixel_strides[0], render_texture_width),
+                emma.TileElm.init(tile_pixel_strides[1], render_texture_height),
             };
+
+            var last_present_ms: i64 = 0;
+            var last_print_ms: i64 = 0;
+
             var done = false;
             while (!quit) {
                 // Event handling
@@ -534,11 +538,12 @@ pub fn main() !void {
                 const frame = frames.current();
                 try frame.fence.wait_and_reset(u.device.logical_device);
 
-                const dt = fps_capper.delay();
+                const now_time_ms = std.time.milliTimestamp() - render_begin;
+                const now_time_sec = @as(f32, @floatFromInt(now_time_ms)) / 1000;
+                const dt = now_time_ms - time_ms;
                 _ = dt;
-
-                now_ns = std.time.milliTimestamp() - render_begin;
-                time = @as(f32, @floatFromInt(now_ns)) / 1000;
+                time_ms = now_time_ms;
+                time_sec = now_time_sec;
 
                 //Commands
                 {
@@ -559,9 +564,9 @@ pub fn main() !void {
                         {
                             pc2.width = @intCast(width);
                             pc2.height = @intCast(height);
-                            pc2.time = time;
-                            pc2.posx = tile_offsets[0].pos;
-                            pc2.posy = tile_offsets[1].pos;
+                            pc2.time = time_sec;
+                            pc2.posx = tiles[0].pos;
+                            pc2.posy = tiles[1].pos;
                             pc2.frame = frame_counter;
                         }
                         frame.cmd.pushConstants(
@@ -580,21 +585,42 @@ pub fn main() !void {
                             &pipeline.sbt.miss_region,
                             &pipeline.sbt.hit_region,
                             &pipeline.sbt.callable_region,
-                            @intCast(tile_offsets[0].len),
-                            @intCast(tile_offsets[1].len),
+                            @intCast(tiles[0].len),
+                            @intCast(tiles[1].len),
                             1,
                         );
                     } else {
                         // quit = true;
                     }
 
-                    tile_offsets[0] = emma.next_tile(tile_offsets[0].pos, tile_strides[0], render_texture_width);
-                    if (tile_offsets[0].pos == 0) {
-                        tile_offsets[1] = emma.next_tile(tile_offsets[1].pos, tile_strides[1], render_texture_height);
+                    if (!done) {
+                        tiles[0] = emma.next_tile(tiles[0].pos, tile_pixel_strides[0], render_texture_width);
+                        if (tiles[0].pos == 0) {
+                            tiles[1] = emma.next_tile(tiles[1].pos, tile_pixel_strides[1], render_texture_height);
+                        }
                     }
-                    const frame_done = (tile_offsets[0].pos == 0 and tile_offsets[1].pos == 0);
+                    const frame_done = (tiles[0].pos == 0 and tiles[1].pos == 0);
+
+                    // I do not want to nest this one
+                    // I should abstract the presenting
                     if (frame_done) {
                         samples += 1;
+                        frame_counter += 1;
+                    }
+
+                    const frame_time_ms = now_time_ms - last_present_ms;
+
+                    if (now_time_ms - last_print_ms > 2000) {
+                        std.debug.print("strides: {}x{} frame_time: {}ms\n", .{
+                            tile_pixel_strides[0],
+                            tile_pixel_strides[1],
+                            frame_time_ms,
+                        });
+                        last_print_ms = now_time_ms;
+                    }
+
+                    if (frame_done or done) {
+                        last_present_ms = now_time_ms;
                         const result = try u.device.logical_device.acquireNextImageKHR(
                             swapchain.handle,
                             std.math.maxInt(u64),
@@ -723,7 +749,7 @@ pub fn main() !void {
                             });
                         }
                         frames.advance();
-                        frame_counter += 1;
+                        // frame_counter += 1;
                     } else {
                         try frame.cmd.endCommandBuffer();
                         const submit_info = vk.SubmitInfo{
@@ -735,15 +761,15 @@ pub fn main() !void {
                     }
                 }
 
-                if (samples > 1000) {
+                if (samples > 300) {
                     done = true;
                 }
             }
 
             {
-                now_ns = std.time.milliTimestamp() - render_begin;
-                time = @as(f32, @floatFromInt(now_ns)) / 1000;
-                std.debug.print("ran for {d}\n", .{time});
+                time_ms = std.time.milliTimestamp() - render_begin;
+                time_sec = @as(f32, @floatFromInt(time_ms)) / 1000;
+                std.debug.print("ran for {d}\n", .{time_sec});
             }
 
             //dump texture

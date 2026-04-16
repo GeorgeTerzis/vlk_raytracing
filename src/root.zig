@@ -2468,6 +2468,14 @@ pub const TileElm = struct {
     pos: u32,
     stride: u32,
     len: u32,
+
+    pub fn init(desired_stride: u32, max: u32) TileElm {
+        return .{
+            .pos = 0,
+            .stride = desired_stride,
+            .len = @min(desired_stride, max),
+        };
+    }
 };
 
 pub fn next_tile(t: u32, desired_stride: u32, max: u32) TileElm {
