@@ -1,7 +1,6 @@
-
 ## Install
 ```bash
-git clone --recurse-submodules git@github.com:GeorgeTerzis/vlk_raytracing.git
+git clone --recurse-submodules https://github.com/GeorgeTerzis/vlk_raytracing.git
 ```
 if you already cloned
 ```bash
