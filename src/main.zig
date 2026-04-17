@@ -58,7 +58,7 @@ pub fn main() !void {
     const allocator: std.mem.Allocator = std.heap.c_allocator;
     var key_state = std.mem.zeroes([sdl.c.SDL_SCANCODE_COUNT]bool);
 
-    const width: usize = 3440;
+    const width: usize = 1440;
     const height: usize = 1440;
 
     var u = try emma.vlk_unit.init(allocator, width, height);
@@ -121,8 +121,14 @@ pub fn main() !void {
             });
         }
         std.debug.print("loaded gpu meshes in {d:.2}ms\n", .{emma.ns_to_ms(timer.lap())});
-        break :blk gm.items;
+        break :blk try gm.toOwnedSlice(allocator);
     };
+
+    defer {
+        for (gpu_meshes) |mesh|
+            mesh.deinit(&u.vma);
+        allocator.free(gpu_meshes);
+    }
 
     var geometry_storage = std.MultiArrayList(emma.raytracing_geometry_data){};
     try geometry_storage.ensureTotalCapacity(allocator, gpu_meshes.len);
@@ -185,6 +191,12 @@ pub fn main() !void {
         }
         std.debug.print("created BLAS structures in {d:.2}ms\n", .{emma.ns_to_ms(timer.lap())});
     }
+    defer {
+        for (blas_list.items) |b| {
+            b.deinit(&u.vma, &u.device);
+        }
+        allocator.free(blas_list.items);
+    }
 
     // have this user controled
     var instance_transforms = try std.ArrayList(vk.TransformMatrixKHR).initCapacity(allocator, 10);
@@ -201,6 +213,12 @@ pub fn main() !void {
 
     try gp.begin();
     var staging_pool = try std.ArrayList(emma.vlk_vma_buffer).initCapacity(allocator, 10);
+    defer {
+        for (staging_pool.items) |buffer| {
+            buffer.deinit(&u.vma);
+        }
+        staging_pool.deinit(allocator);
+    }
     const buffers = blk: {
         var buffers_info = try std.ArrayList(PC.Buffers).initCapacity(allocator, gpu_meshes.len);
 
@@ -298,9 +316,12 @@ pub fn main() !void {
         .{},
         gp,
     );
+    defer tlas.deinit(&u.vma, &u.device);
+
     const rt_props = emma.vlk_get_raytracing_properties(&u.vki, &u.device);
     const file = try std.fs.cwd().openFile("./src/shaders/hw_raytracing/shader.spv", .{});
     defer file.close();
+
     const spirv = try emma.readfile_alloc(allocator, file);
     defer allocator.free(spirv);
 
@@ -339,6 +360,7 @@ pub fn main() !void {
         gp,
         &rt_modules,
     );
+    defer pipeline.deinit(&u.vma, &u.device);
     std.debug.print("Created pipeline successfully \n", .{});
     //
 
@@ -357,8 +379,8 @@ pub fn main() !void {
         defer descriptor_pool.deinit(u.device.logical_device);
 
         //create texture
-        const render_texture_width = width;
-        const render_texture_height = height;
+        const render_texture_width = 1440;
+        const render_texture_height = 1400;
 
         const render_texture = try emma.vlk_image.init(
             &u.vma,
@@ -503,15 +525,14 @@ pub fn main() !void {
 
             var mouse = mouse_state{ .x = 0, .y = 0 };
 
-            const tile_pixel_strides = [2]u32{ 500, 500 };
+            const tile_pixel_strides = [2]u32{ 512, 512 };
             var tiles = [2]emma.TileElm{
                 emma.TileElm.init(tile_pixel_strides[0], render_texture_width),
                 emma.TileElm.init(tile_pixel_strides[1], render_texture_height),
             };
 
             var last_present_ms: i64 = 0;
-            var last_print_ms: i64 = 0;
-
+            // var last_print_ms: i64 = 0;
             var done = false;
             while (!quit) {
                 // Event handling
@@ -542,6 +563,7 @@ pub fn main() !void {
                 const now_time_sec = @as(f32, @floatFromInt(now_time_ms)) / 1000;
                 const dt = now_time_ms - time_ms;
                 _ = dt;
+
                 time_ms = now_time_ms;
                 time_sec = now_time_sec;
 
@@ -562,8 +584,8 @@ pub fn main() !void {
                         );
 
                         {
-                            pc2.width = @intCast(width);
-                            pc2.height = @intCast(height);
+                            pc2.width = @intCast(render_texture_width);
+                            pc2.height = @intCast(render_texture_height);
                             pc2.time = time_sec;
                             pc2.posx = tiles[0].pos;
                             pc2.posy = tiles[1].pos;
@@ -595,9 +617,8 @@ pub fn main() !void {
 
                     if (!done) {
                         tiles[0] = emma.next_tile(tiles[0].pos, tile_pixel_strides[0], render_texture_width);
-                        if (tiles[0].pos == 0) {
+                        if (tiles[0].pos == 0)
                             tiles[1] = emma.next_tile(tiles[1].pos, tile_pixel_strides[1], render_texture_height);
-                        }
                     }
                     const frame_done = (tiles[0].pos == 0 and tiles[1].pos == 0);
 
@@ -608,18 +629,17 @@ pub fn main() !void {
                         frame_counter += 1;
                     }
 
-                    const frame_time_ms = now_time_ms - last_present_ms;
+                    // const frame_time_ms = now_time_ms - last_present_ms;
+                    // if (now_time_ms - last_print_ms > 2000) {
+                    //     std.debug.print("strides: {}x{} frame_time: {}ms\n", .{
+                    //         tile_pixel_strides[0],
+                    //         tile_pixel_strides[1],
+                    //         frame_time_ms,
+                    //     });
+                    //     last_print_ms = now_time_ms;
+                    // }
 
-                    if (now_time_ms - last_print_ms > 2000) {
-                        std.debug.print("strides: {}x{} frame_time: {}ms\n", .{
-                            tile_pixel_strides[0],
-                            tile_pixel_strides[1],
-                            frame_time_ms,
-                        });
-                        last_print_ms = now_time_ms;
-                    }
-
-                    if (frame_done or done) {
+                    if (true) {
                         last_present_ms = now_time_ms;
                         const result = try u.device.logical_device.acquireNextImageKHR(
                             swapchain.handle,

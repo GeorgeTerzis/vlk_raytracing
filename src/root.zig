@@ -447,7 +447,7 @@ pub const vlk_window = struct {
 
     pub fn init(vki: *vlk_instance, screen_width: usize, screen_height: usize) !vlk_window {
         var self: vlk_window = undefined;
-        self.sdl_window = try sdl.video.Window.init("EMMA", screen_width, screen_height, .{ .vulkan = true, .resizable = false });
+        self.sdl_window = try sdl.video.Window.init("EMMA", screen_width, screen_height, .{ .vulkan = true, .resizable = true });
 
         const handle = to_ptr(sdl.vulkan.Instance, vki.instance.handle);
         self.surface = try sdl.vulkan.Surface.init(self.sdl_window, handle, null);
@@ -1230,10 +1230,10 @@ pub const vlk_pipeline = struct {
         return inst;
     }
 
-    pub fn deinit(self: @This(), device: vk.DeviceProxy) void {
-        device.destroyPipeline(self.pipeline, null);
-        device.destroyPipelineLayout(self.layout, null);
-        self.descriptor_set_layout.deinit(device);
+    pub fn deinit(self: @This(), device: *vlk_device) void {
+        device.logical_device.destroyPipeline(self.pipeline, null);
+        device.logical_device.destroyPipelineLayout(self.layout, null);
+        self.descriptor_set_layout.deinit(device.logical_device);
     }
 };
 
@@ -1302,6 +1302,10 @@ pub const vlk_raytracing_pipeline = struct {
         hit_region: vk.StridedDeviceAddressRegionKHR,
         callable_region: vk.StridedDeviceAddressRegionKHR,
 
+        pub fn deinit(self: @This(), vma: *vlk_vma) void {
+            self.buffer.deinit(vma);
+        }
+
         pub fn init(
             allocator: std.mem.Allocator,
             vma: *vlk_vma,
@@ -1363,6 +1367,7 @@ pub const vlk_raytracing_pipeline = struct {
             errdefer region_buffer.deinit(vma);
 
             const staging = try vlk_upload_buffer(vma, buffer_size);
+            defer staging.deinit(vma);
             const mapping_ptr: [*]u8 = @ptrCast(try staging.map(vma));
             const mapping: []u8 = mapping_ptr[0..buffer_size];
             {
@@ -1594,6 +1599,10 @@ pub const vlk_raytracing_pipeline = struct {
             .sbt = sbt,
         };
     }
+    pub fn deinit(self: @This(), vma: *vlk_vma, device: *vlk_device) void {
+        self.sbt.deinit(vma);
+        self.pipeline.deinit(device);
+    }
 };
 
 pub const gpu_mesh = struct {
@@ -1685,6 +1694,8 @@ pub const gpu_mesh = struct {
     pub fn deinit(self: @This(), vma: *vlk_vma) void {
         self.vertex_buffer.deinit(vma);
         self.index_buffer.deinit(vma);
+        self.normal_buffer.deinit(vma);
+        self.normal_index_buffer.deinit(vma);
     }
 };
 
@@ -1895,6 +1906,10 @@ pub const raytracing_acceleration_structure = struct {
             gp,
         );
     }
+    pub fn deinit(self: @This(), vma: *vlk_vma, device: *vlk_device) void {
+        device.logical_device.destroyAccelerationStructureKHR(self.handle, null);
+        self.buffer.deinit(vma);
+    }
 };
 
 pub const raytracing_geometry_data = struct {
@@ -1937,74 +1952,74 @@ pub const raytracing_geometry_data = struct {
     }
 };
 
-pub const vlk_compute_pipeline = struct {
-    shader_module: vk.ShaderModule,
-    pipeline: vlk_pipeline,
+// pub const vlk_compute_pipeline = struct {
+//     shader_module: vk.ShaderModule,
+//     pipeline: vlk_pipeline,
 
-    pub fn init(
-        device: *vlk_device,
-        spirv: []const u8,
-        bindings: []const vk.DescriptorSetLayoutBinding,
-        binding_flags: []const vk.DescriptorBindingFlags,
-        pcs: []const vlk_pc_layout,
-    ) !vlk_compute_pipeline {
-        const shader_module = try device.logical_device.createShaderModule(&.{
-            .code_size = spirv.len,
-            .p_code = @ptrCast(@alignCast(spirv.ptr)),
-        }, null);
-        errdefer device.logical_device.destroyShaderModule(shader_module, null);
+//     pub fn init(
+//         device: *vlk_device,
+//         spirv: []const u8,
+//         bindings: []const vk.DescriptorSetLayoutBinding,
+//         binding_flags: []const vk.DescriptorBindingFlags,
+//         pcs: []const vlk_pc_layout,
+//     ) !vlk_compute_pipeline {
+//         const shader_module = try device.logical_device.createShaderModule(&.{
+//             .code_size = spirv.len,
+//             .p_code = @ptrCast(@alignCast(spirv.ptr)),
+//         }, null);
+//         errdefer device.logical_device.destroyShaderModule(shader_module, null);
 
-        const shader_pipeline_info = vk.PipelineShaderStageCreateInfo{
-            .stage = .{ .compute_bit = true },
-            .module = shader_module,
-            .p_name = "main",
-        };
+//         const shader_pipeline_info = vk.PipelineShaderStageCreateInfo{
+//             .stage = .{ .compute_bit = true },
+//             .module = shader_module,
+//             .p_name = "main",
+//         };
 
-        const descriptor_set_layout = try vlk_descriptor_set_layout.init(device, bindings, binding_flags);
-        errdefer descriptor_set_layout.deinit(device.logical_device);
+//         const descriptor_set_layout = try vlk_descriptor_set_layout.init(device, bindings, binding_flags);
+//         errdefer descriptor_set_layout.deinit(device.logical_device);
 
-        var ranges: [8]vk.PushConstantRange = undefined;
-        for (pcs, 0..) |pc, i| {
-            ranges[i] = pc.range;
-        }
+//         var ranges: [8]vk.PushConstantRange = undefined;
+//         for (pcs, 0..) |pc, i| {
+//             ranges[i] = pc.range;
+//         }
 
-        const pipeline_layout = try device.logical_device.createPipelineLayout(&.{
-            .set_layout_count = 1,
-            .p_set_layouts = @ptrCast(&descriptor_set_layout.handle),
-            .push_constant_range_count = @intCast(pcs.len),
-            .p_push_constant_ranges = if (pcs.len > 0) &ranges else null,
-        }, null);
-        errdefer device.logical_device.destroyPipelineLayout(pipeline_layout, null);
+//         const pipeline_layout = try device.logical_device.createPipelineLayout(&.{
+//             .set_layout_count = 1,
+//             .p_set_layouts = @ptrCast(&descriptor_set_layout.handle),
+//             .push_constant_range_count = @intCast(pcs.len),
+//             .p_push_constant_ranges = if (pcs.len > 0) &ranges else null,
+//         }, null);
+//         errdefer device.logical_device.destroyPipelineLayout(pipeline_layout, null);
 
-        var pipeline: vk.Pipeline = undefined;
-        _ = try device.logical_device.createComputePipelines(
-            .null_handle,
-            1,
-            &[1]vk.ComputePipelineCreateInfo{.{
-                .stage = shader_pipeline_info,
-                .layout = pipeline_layout,
-                .base_pipeline_handle = .null_handle,
-                .base_pipeline_index = -1,
-            }},
-            null,
-            @ptrCast(&pipeline),
-        );
+//         var pipeline: vk.Pipeline = undefined;
+//         _ = try device.logical_device.createComputePipelines(
+//             .null_handle,
+//             1,
+//             &[1]vk.ComputePipelineCreateInfo{.{
+//                 .stage = shader_pipeline_info,
+//                 .layout = pipeline_layout,
+//                 .base_pipeline_handle = .null_handle,
+//                 .base_pipeline_index = -1,
+//             }},
+//             null,
+//             @ptrCast(&pipeline),
+//         );
 
-        return .{
-            .shader_module = shader_module,
-            .pipeline = .{
-                .pipeline = pipeline,
-                .layout = pipeline_layout,
-                .descriptor_set_layout = descriptor_set_layout,
-            },
-        };
-    }
+//         return .{
+//             .shader_module = shader_module,
+//             .pipeline = .{
+//                 .pipeline = pipeline,
+//                 .layout = pipeline_layout,
+//                 .descriptor_set_layout = descriptor_set_layout,
+//             },
+//         };
+//     }
 
-    pub fn deinit(self: @This(), device: vk.DeviceProxy) void {
-        self.pipeline.deinit(device);
-        device.destroyShaderModule(self.shader_module, null);
-    }
-};
+//     pub fn deinit(self: @This(), device: vk.DeviceProxy) void {
+//         self.pipeline.deinit(device);
+//         device.destroyShaderModule(self.shader_module, null);
+//     }
+// };
 
 pub const vlk_fence = struct {
     handle: vk.Fence,
@@ -2165,6 +2180,7 @@ pub const vlk_image = struct {
             );
         }
     }
+
     pub fn cmd_transition(
         self: @This(),
         cmd: vk.CommandBufferProxy,
@@ -2436,7 +2452,6 @@ pub const vlk_fence_pool = struct {
         return fence.?;
     }
 
-    // call each frame to reclaim signaled fences
     pub fn reclaim(self: *@This(), device: *vlk_device) !void {
         var i: usize = 0;
         while (i < self.in_use.items.len) {
