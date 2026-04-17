@@ -14,12 +14,23 @@ or
 ```bash
 zig build -Doptimize=ReleaseFast
 ```
+because obj file reading can take a while
+
+
 to run the program
 ```bash
 ./zig-out/bin/emma
 ```
 
-because obj file reading can take a while
+## Shaders
+Precompiled shaders are included but just in case you can compile them your self
+
+To compile the shaders, you must install the Slang compiler:
+https://shader-slang.org/
+
+Shaders are located at `./src/shaders/hw_raytracing`.
+Only the `main.slang` file needs to be compiled, the remaining files are modules included during compilation.
+Make sure to name it shader.spv
 
 ## Platform Support
 Currently, this project only targets Linux, as that is the environment it has been developed and tested on.
