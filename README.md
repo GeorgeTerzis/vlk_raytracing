@@ -14,6 +14,11 @@ or
 ```bash
 zig build -Doptimize=ReleaseFast
 ```
+to run the program
+```bash
+./zig-out/bin/emma
+```
+
 because obj file reading can take a while
 
 ## Platform Support
