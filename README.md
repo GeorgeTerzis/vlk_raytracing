@@ -43,9 +43,14 @@ Make sure to name it shader.spv
 Currently, this project only targets Linux, as that is the environment it has been developed and tested on.
 Windows/macOS support is not guaranteed and may require changes to Vulkan/SDL3 setup.
 
-libs used:
-- tinyexr
-- VMA
-- zig-obj
-- vulkan-zig
-- zig-sdl3
+
+## References
+- https://nvpro-samples.github.io/vk_raytracing_tutorial_KHR/
+
+## Libraries Used
+
+- [vulkan-zig](https://github.com/Snektron/vulkan-zig)
+- [tinyexr](https://github.com/syoyo/tinyexr)
+- [Vulkan Memory Allocator](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator)
+- [zig-obj](https://github.com/chip2n/zig-obj)
+- [zig-sdl3](https://github.com/Gota7/zig-sdl3)
