@@ -5,20 +5,27 @@ import rand;
 public static float PI = 3.14159265359;
 
 public float3 cosine_hemisphere(float3 normal, inout uint seed) {
-    let r1 = random::unit(seed);
-    let r2 = random::unit(seed);
-
-    let phi = 2.0 * PI * r1;
-    let r = sqrt(r2);
-
-    let x = r * cos(phi);
-    let y = r * sin(phi);
-    let z = sqrt(1.0 - r2);
+    let d = random_in_unit_disk(seed);
+    let x = d.x;
+    let y = d.y;
+    let z = sqrt(max(0.0, 1.0 - x*x - y*y));
 
     let tangent = any_perpendicular(normal);
     let bitangent = normalize(cross(normal, tangent));
 
     return normalize(tangent * x + bitangent * y + normal * z);
+}
+float2 random_in_unit_disk(inout uint seed) {
+    float r1 = random::unit(seed);
+    float r2 = random::unit(seed);
+
+    float theta = 2.0 * PI * r1;
+    float radius = sqrt(r2);
+
+    return float2(
+        radius * cos(theta),
+        radius * sin(theta)
+    );
 }
 
 public float3 bias_vector(float3 vec, float3 vec_origin, float3 bias_point, float k) {

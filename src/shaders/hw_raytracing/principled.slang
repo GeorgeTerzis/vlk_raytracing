@@ -267,7 +267,7 @@ public struct Principled : Material {
             let a2 = a * a;
             let wo_local = to_local_vndf(view, surface);
 
-            let wm_local = VNDF::GgxVndf(wo_local, a, u);
+            let wm_local = VNDF::GgxVndf(wo_local, a2, u);
             let wi_local = reflect(-wo_local, wm_local);
             let wi_world = to_world_vndf(wi_local, surface);
 
@@ -292,7 +292,7 @@ public struct Principled : Material {
             let a = max(Clearcoat::ag(pclearcoat.gloss), 0.02);
             let a2 = a * a;
             let wo_local = to_local_vndf(view, surface);
-            let wm_local = VNDF::GgxVndf(wo_local, a, u);
+            let wm_local = VNDF::GgxVndf(wo_local, a2, u);
             let wi_local = reflect(-wo_local, wm_local);
             let wi_world = to_world_vndf(wi_local, surface);
             state.ray.Direction = wi_world;

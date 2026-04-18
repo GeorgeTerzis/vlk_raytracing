@@ -465,11 +465,10 @@ pub fn main() !void {
                 .dst_array_element = 0,
                 .descriptor_type = .storage_image,
                 .p_texel_buffer_view = undefined,
-                .p_image_info = @ptrCast(&image_info),
+                .p_image_info = @ptrCast(&.{image_info}),
                 .p_buffer_info = undefined,
             },
         };
-
         u.device.logical_device.updateDescriptorSets(writes.len, &writes, 0, null);
 
         const rt_pipeline_instance = pipeline.pipeline.instance(sets[0..]);
@@ -494,7 +493,6 @@ pub fn main() !void {
             );
             defer frames.deinit(u.device.logical_device);
 
-            // var fps_capper = sdl.extras.FramerateCapper(f64){ .mode = .{ .unlimited = {} } };
             var quit = false;
             const render_begin = std.time.milliTimestamp();
 
@@ -532,7 +530,9 @@ pub fn main() !void {
             };
 
             var last_present_ms: i64 = 0;
-            // var last_print_ms: i64 = 0;
+            var avg_ms: f64 = 0;
+            var avg_n: f64 = 0.0;
+
             var done = false;
             while (!quit) {
                 // Event handling
@@ -622,25 +622,15 @@ pub fn main() !void {
                     }
                     const frame_done = (tiles[0].pos == 0 and tiles[1].pos == 0);
 
-                    // I do not want to nest this one
-                    // I should abstract the presenting
-                    if (frame_done) {
+                    if (frame_done and !done) {
+                        const last_present_diff = now_time_ms - last_present_ms;
                         samples += 1;
                         frame_counter += 1;
-                    }
-
-                    // const frame_time_ms = now_time_ms - last_present_ms;
-                    // if (now_time_ms - last_print_ms > 2000) {
-                    //     std.debug.print("strides: {}x{} frame_time: {}ms\n", .{
-                    //         tile_pixel_strides[0],
-                    //         tile_pixel_strides[1],
-                    //         frame_time_ms,
-                    //     });
-                    //     last_print_ms = now_time_ms;
-                    // }
-
-                    if (true) {
                         last_present_ms = now_time_ms;
+
+                        avg_n += 1;
+                        avg_ms += (@as(f64, @floatFromInt(last_present_diff)) - avg_ms) / avg_n;
+
                         const result = try u.device.logical_device.acquireNextImageKHR(
                             swapchain.handle,
                             std.math.maxInt(u64),
@@ -658,7 +648,7 @@ pub fn main() !void {
                         {
                             render_texture.cmd_transition(
                                 frame.cmd,
-                                .{ .compute_shader_bit = true },
+                                .{ .ray_tracing_shader_bit_khr = true },
                                 .{ .all_transfer_bit = true },
                                 .{ .shader_write_bit = true },
                                 .{ .transfer_read_bit = true },
@@ -732,7 +722,7 @@ pub fn main() !void {
                             render_texture.cmd_transition(
                                 frame.cmd,
                                 .{ .all_transfer_bit = true },
-                                .{ .compute_shader_bit = true },
+                                .{ .ray_tracing_shader_bit_khr = true },
                                 .{ .transfer_read_bit = true },
                                 .{ .shader_write_bit = true },
                                 .transfer_src_optimal,
@@ -768,7 +758,6 @@ pub fn main() !void {
                                 .p_image_indices = @ptrCast(&image_index),
                             });
                         }
-                        frames.advance();
                         // frame_counter += 1;
                     } else {
                         try frame.cmd.endCommandBuffer();
@@ -780,8 +769,9 @@ pub fn main() !void {
                         try u.device.queue.submit(1, &[1]vk.SubmitInfo{submit_info}, frame.fence.handle);
                     }
                 }
+                frames.advance();
 
-                if (samples > 300) {
+                if (samples > 5000) {
                     done = true;
                 }
             }
@@ -789,7 +779,7 @@ pub fn main() !void {
             {
                 time_ms = std.time.milliTimestamp() - render_begin;
                 time_sec = @as(f32, @floatFromInt(time_ms)) / 1000;
-                std.debug.print("ran for {d}\n", .{time_sec});
+                std.debug.print("ran for {d} with avg ms {d}\n", .{ time_sec, avg_ms });
             }
 
             //dump texture
@@ -834,7 +824,7 @@ pub fn main() !void {
                     render_texture.cmd_transition(
                         gp.cmd,
                         .{ .all_transfer_bit = true },
-                        .{ .compute_shader_bit = true },
+                        .{ .ray_tracing_shader_bit_khr = true },
                         .{ .transfer_read_bit = true },
                         .{ .shader_write_bit = true },
                         .transfer_src_optimal,

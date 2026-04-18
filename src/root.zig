@@ -1,18 +1,14 @@
 const std = @import("std");
 const builtin = @import("builtin");
-
-// pub const mth = @import("mth");
 pub const obj = @import("obj");
-// pub const zigimg = @import("zigimg");
 pub const sdl = @import("sdl3");
 pub const vk = @import("vulkan");
-
 pub const mesh = @import("mesh.zig");
-
+// pub const mth = @import("mth");
+// pub const zigimg = @import("zigimg");
 pub const c_vma = @cImport({
     @cInclude("vma.h");
 });
-
 pub const tinyexr = @cImport({
     @cInclude("tinyexr.h");
 });
@@ -25,6 +21,7 @@ pub fn to_enum(comptime T: type, in: anytype) T {
     const int_val = @intFromPtr(in);
     return @as(T, @enumFromInt(int_val));
 }
+
 pub fn to_ptr(comptime T: type, in: anytype) T {
     return @ptrFromInt(@intFromEnum(in));
 }
@@ -1471,7 +1468,6 @@ pub const vlk_raytracing_pipeline = struct {
         };
         //
 
-        // Sets
         // set 0
         const set0_bindings = [_]vk.DescriptorSetLayoutBinding{
             .{
@@ -1487,14 +1483,10 @@ pub const vlk_raytracing_pipeline = struct {
                 .stage_flags = .{ .raygen_bit_khr = true },
             },
         };
-        const set0_bindings_layout = try device.logical_device.createDescriptorSetLayout(&.{
-            .binding_count = set0_bindings.len,
-            .p_bindings = &set0_bindings,
-        }, null);
-        //
+        const set0_layout = try set_create_layout(device, &set0_bindings);
 
         const descriptor_sets = [_]vk.DescriptorSetLayout{
-            set0_bindings_layout,
+            set0_layout,
         };
         const pipeline_layout_info = vk.PipelineLayoutCreateInfo{
             .push_constant_range_count = push_constants.len,
@@ -1592,7 +1584,7 @@ pub const vlk_raytracing_pipeline = struct {
             .pipeline = .{
                 .pipeline = pipelines[0],
                 .descriptor_set_layout = .{
-                    .handle = set0_bindings_layout,
+                    .handle = set0_layout,
                 },
                 .layout = layout,
             },
@@ -2511,4 +2503,16 @@ pub fn next_tile(t: u32, desired_stride: u32, max: u32) TileElm {
         break :blk desired_stride;
     };
     return .{ .pos = pos, .stride = stride, .len = len };
+}
+
+pub fn set_create_info(set: []const vk.DescriptorSetLayoutBinding) vk.DescriptorSetLayoutCreateInfo {
+    return .{
+        .binding_count = @intCast(set.len),
+        .p_bindings = set.ptr,
+    };
+}
+
+pub fn set_create_layout(device: *vlk_device, set: []const vk.DescriptorSetLayoutBinding) !vk.DescriptorSetLayout {
+    const infos = set_create_info(set); // maybe separte this?
+    return try device.logical_device.createDescriptorSetLayout(&infos, null);
 }

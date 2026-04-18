@@ -22,11 +22,11 @@ public struct random {
     }
 
     public static float2 f2(inout uint seed) {
-        return {unit(seed), unit(seed)};
+        return { unit(seed), unit(seed) };
     }
 
     public static float3 f3(inout uint seed) {
-        return {unit(seed), unit(seed), unit(seed)};
+        return { unit(seed), unit(seed), unit(seed) };
     }
 };
 
@@ -36,7 +36,6 @@ public struct random {
 //     v = (v >> 22u) ^ v;
 //     return v;
 // }
-
 
 // public float rand01(inout uint seed) {
 //     seed = pcg_hash(seed);
@@ -53,6 +52,4 @@ public struct random {
 // public float3 rand_f3(inout uint seed) {
 //     return float3(rand01(seed), rand01(seed), rand01(seed));
 // }
-
-
 
