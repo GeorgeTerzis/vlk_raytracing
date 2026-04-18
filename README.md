@@ -1,3 +1,10 @@
+<img src="images/render.png" width="500">
+
+Path-traced frame.
+
+The models in this repository are not 1:1 with those used in the final building scene.  
+This is due to GitHub repository size constraints. The building and curtain models are the most affected by these limitations.
+
 ## Install
 ```bash
 git clone --recurse-submodules https://github.com/GeorgeTerzis/vlk_raytracing.git

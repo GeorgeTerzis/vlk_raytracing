@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{ .default_target = .{} });
@@ -14,16 +15,17 @@ pub fn build(b: *std.Build) void {
     });
 
     const shader_step = b.step("shaders", "Compile shaders");
-    {
-        const compile_shaders = b.addSystemCommand(&.{
-            "zsh",
-            b.path("compile_shaders.zsh").getPath(b),
-        });
-        compile_shaders.setName("shaders");
-        shader_step.dependOn(&compile_shaders.step);
-        exe.step.dependOn(&compile_shaders.step);
-        b.getInstallStep().dependOn(&compile_shaders.step);
-    }
+    const compile_shader = b.addSystemCommand(&.{
+        "slangc",
+        "-O3",
+        "src/shaders/hw_raytracing/main.slang",
+        "-o",
+        "src/shaders/hw_raytracing/shader.spv",
+    });
+    compile_shader.setName("slangc");
+    shader_step.dependOn(&compile_shader.step);
+    exe.step.dependOn(&compile_shader.step);
+    b.getInstallStep().dependOn(&compile_shader.step);
 
     // const mth = b.addModule("mth", .{
     //     .root_source_file = b.path("src/mth.zig"),

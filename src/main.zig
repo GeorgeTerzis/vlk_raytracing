@@ -380,7 +380,7 @@ pub fn main() !void {
 
         //create texture
         const render_texture_width = 1440;
-        const render_texture_height = 1400;
+        const render_texture_height = 1440;
 
         const render_texture = try emma.vlk_image.init(
             &u.vma,

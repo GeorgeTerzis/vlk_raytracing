@@ -113,6 +113,18 @@ struct Glass : Material {
     float roughness = 0.0;
     float k = 1.0;
 
+    float3 specular(float3 I, float3 N, float roughness, inout uint seed) {
+        float3 reflected = reflect(I, N);
+        reflected = normalize(reflected + cosine_hemisphere(reflected, seed) * roughness);
+        return reflected;
+    }
+
+    float3 refraction(float3 I, float3 N, float eta, float roughness, inout uint seed) {
+        var refracted = refract(I, N, eta);
+        let noise = cosine_hemisphere(refracted, seed) * roughness;
+        return normalize(refracted + noise);
+    }
+
     void scatter(Surface surface, inout State payload) {
         var N = surface.normal;
         var I = normalize(payload.ray.Direction);
@@ -127,7 +139,7 @@ struct Glass : Material {
         } else {
             let exit_t = RayTCurrent();
             let dist = exit_t - payload.medium_t;
-            let absorb = exp(-(absorbtion * k)* dist);
+            let absorb = exp(-(absorbtion * k) * dist);
 
             payload.throughput *= absorb;
 
@@ -146,15 +158,9 @@ struct Glass : Material {
         let prob = should_reflect ? reflect_prob : (1.0 - reflect_prob);
 
         if (should_reflect) {
-            var reflected = reflect(I, N);
-            reflected = normalize(reflected +
-                                  cosine_hemisphere(reflected, payload.seed) * roughness);
-            payload.ray.Direction = reflected;
+            payload.ray.Direction = specular(I, N, roughness, payload.seed);
         } else {
-            var refracted = refract(I, N, eta);
-            refracted = normalize(refracted +
-                                  cosine_hemisphere(refracted, payload.seed) * roughness);
-            payload.ray.Direction = refracted;
+            payload.ray.Direction = refraction(I, N, eta, roughness, payload.seed);
         }
         payload.throughput /= prob;
     }
@@ -162,8 +168,8 @@ struct Glass : Material {
 
 [shader("raygeneration")]
 void raygen_entry() {
-    static let SAMPLES_PER_PIXEL = 2;
-    static let BOUNCES = 20;
+    static let SAMPLES_PER_PIXEL = 3;
+    static let BOUNCES = 30;
     let ray_origin = float3(0, 2.0, 9.0);
 
     let screen = Screen::make(uint3(pc.pos, 0) + DispatchRaysIndex());
@@ -252,7 +258,7 @@ struct HitInfo {
 
 void mat(const HitInfo hit, const Surface surface, inout State state) {
     let frosted_glass = Glass(float3(1), 1.5, 0.2);
-    let glass = Glass(float3(0.4, 0.8, 0.5), 2, 0.0, 0.01);
+    let glass = Glass(float3(0.4, 0.9, 0.5), 2, 0.0, 0.02);
 
     let cloth_diffuse = Principled::diffuse_pararms(0.8);
     let cloth_sheen = Principled::sheen_params(10, 0);
@@ -290,7 +296,7 @@ void mat(const HitInfo hit, const Surface surface, inout State state) {
     } else if (hit.instance == 1)
         cloth.scatter(surface, state);
     else if (hit.instance == 5)
-        frosted_glass.scatter(surface, state);
+        mirror.scatter(surface, state);
     else if (hit.instance == 3)
         glass.scatter(surface, state);
     else
@@ -305,7 +311,7 @@ void closest_hit_entry(inout State payload,
     let range = pc.ranges[hit.instance];
     let geometry = pc.geometries[range.begin + hit.geometry];
     let buffer = pc.buffers[geometry.buffer_index];
-    
+
     let prim = Primitive::make(buffer, hit.primitive, attr.barycentrics);
     let surface = Surface::make(prim.geometric_norm, prim.norm);
     let safe_pos = hit.pos + (surface.normal * 1e-7);
