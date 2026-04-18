@@ -30,7 +30,7 @@ to run the program
 ```
 
 ## Shaders
-Precompiled shaders are included but just in case you can compile them your self
+Precompiled shaders are included but just in case you can compile them yourself
 
 To compile the shaders, you must install the Slang compiler:
 https://shader-slang.org/
