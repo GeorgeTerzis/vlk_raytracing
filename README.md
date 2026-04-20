@@ -1,3 +1,5 @@
+This project uses zig `0.15.2` for now
+
 <img src="images/render.png" width="500">
 
 Path-traced frame.
