@@ -25,7 +25,7 @@ struct PC {
 
     struct Instance {
         uint range_index;
-    }
+    };
 
     uint2 res;
     float time;
@@ -36,6 +36,7 @@ struct PC {
     Geometry* geometries;
     Range* ranges;
 };
+
 [[vk::push_constant]]
 PC pc;
 
@@ -44,6 +45,9 @@ RaytracingAccelerationStructure tlas;
 
 [[vk::binding(1, 0)]]
 RWTexture2D<float4> output;
+
+[[vk::binding(2, 0)]]
+RWTexture2D<float3> normals;
 
 struct Screen {
     uint3 resolution;
@@ -73,15 +77,19 @@ struct Primitive {
     float3 geometric_norm;
 
     static Primitive make(PC.Buffers buffer, uint primitive, float2 bary) {
-        uint base = primitive * 3;
+        let base = primitive * 3;
 
-        let vi0 = buffer.indicies[base + 0];
-        let vi1 = buffer.indicies[base + 1];
-        let vi2 = buffer.indicies[base + 2];
+        let i0 = base + 0;
+        let i1 = base + 1;
+        let i2 = base + 2;
 
-        let ni0 = buffer.normals_indicies[base + 0];
-        let ni1 = buffer.normals_indicies[base + 1];
-        let ni2 = buffer.normals_indicies[base + 2];
+        let vi0 = buffer.indicies[i0];
+        let vi1 = buffer.indicies[i1];
+        let vi2 = buffer.indicies[i2];
+
+        let ni0 = buffer.normals_indicies[i0];
+        let ni1 = buffer.normals_indicies[i1];
+        let ni2 = buffer.normals_indicies[i2];
 
         let v0 = buffer.verts[vi0];
         let v1 = buffer.verts[vi1];
@@ -106,6 +114,31 @@ struct Emission : Material {
         payload.hit = false;
     }
 };
+
+float3 sample_phase_function(float3 wo, float g, inout uint seed) {
+    float u1 = random::unit(seed);
+    float u2 = random::unit(seed);
+    float cos_theta;
+
+    if (abs(g) < 1e-3) {
+        cos_theta = 1.0 - 2.0 * u1;
+    } else {
+        float sqr = (1.0 - g * g) / (1.0 - g + 2.0 * g * u1);
+        cos_theta = (1.0 + g * g - sqr * sqr) / (2.0 * g);
+    }
+
+    float sin_theta = sqrt(max(0.0, 1.0 - cos_theta * cos_theta));
+    float phi = 2.0 * PI * u2;
+
+    float3 dir = float3(cos(phi) * sin_theta, sin(phi) * sin_theta, cos_theta);
+
+    float3 w = normalize(wo);
+    float3 a = (abs(w.z) < 0.999) ? float3(0, 0, 1) : float3(1, 0, 0);
+    float3 v = normalize(cross(a, w));
+    float3 u = cross(w, v);
+
+    return normalize(u * dir.x + v * dir.y + w * dir.z);
+}
 
 struct Glass : Material {
     float3 absorbtion;
@@ -134,16 +167,12 @@ struct Glass : Material {
 
         if (!is_backface) {
             eta = 1.0 / ior;
-            payload.inside_medium = true;
             payload.medium_t = RayTCurrent();
         } else {
             let exit_t = RayTCurrent();
             let dist = exit_t - payload.medium_t;
             let absorb = exp(-(absorbtion * k) * dist);
-
             payload.throughput *= absorb;
-
-            payload.inside_medium = false;
         }
 
         let cos_theta = min(dot(-I, N), 1.0);
@@ -168,7 +197,7 @@ struct Glass : Material {
 
 [shader("raygeneration")]
 void raygen_entry() {
-    static let SAMPLES_PER_PIXEL = 3;
+    static let SAMPLES_PER_PIXEL = 1;
     static let BOUNCES = 30;
     let ray_origin = float3(0, 2.0, 9.0);
 
@@ -258,9 +287,9 @@ struct HitInfo {
 
 void mat(const HitInfo hit, const Surface surface, inout State state) {
     let frosted_glass = Glass(float3(1), 1.5, 0.2);
-    let glass = Glass(float3(0.4, 0.9, 0.5), 2, 0.0, 0.02);
+    let glass = Glass(float3(0.1, 0.9, 0.5), 2, 0.0, 0.01);
 
-    let cloth_diffuse = Principled::diffuse_pararms(0.8);
+    let cloth_diffuse = Principled::diffuse_pararms(0);
     let cloth_sheen = Principled::sheen_params(10, 0);
     let cloth = Principled(hit.pos.x > 0 ? float3(0.8, 0.6, 0.2) : float3(0.2, 0.5, 0.8),
                            0.5,
@@ -277,7 +306,7 @@ void mat(const HitInfo hit, const Surface surface, inout State state) {
     let diffuse_clearcoat =
         Principled::clearcoat_params((!is_floor) || is_left ? 0 : 1, 1);
     let diffuse = Principled((!is_floor) || is_left ? float3(0.8) : float3(0.8, 0.6, 0.2),
-                             is_metallic ? 0.3 : 0.6,
+                             is_metallic ? 0.3 : 0.8,
                              is_metallic ? 1.0 : 0.0,
                              diffuse_dif,
                              {},

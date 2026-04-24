@@ -5,7 +5,17 @@ const emma = @import("emma");
 const sdl = emma.sdl;
 const vk = emma.vk;
 const vma = emma.c_vma;
-const zigimg = emma.zigimg;
+
+// const LocalMeshes = struct {};
+// const DeviceMeshes = struct {};
+// const Mesh = struct {
+//     geometry: []u32,
+//     mat: u32,
+
+//     pos: [3]f32,
+//     rot: [4]f32,
+//     scale: [3]f32,
+// };
 
 const PC = extern struct {
     const Buffers = struct {
@@ -37,7 +47,7 @@ const PC = extern struct {
     ranges: u64,
 };
 
-const models = [_][:0]const u8{
+const geometry_list = [_][:0]const u8{
     "./src/models/scene/dragon.obj",
     "./src/models/scene/curtains.obj",
     "./src/models/scene/building.obj",
@@ -51,7 +61,126 @@ const mouse_state = struct {
     y: f32,
 };
 
+const Transform = struct {
+    pos: emma.mth.vec4,
+    rot: emma.mth.quat4,
+    scale: emma.mth.vec4,
+};
+
+const Material = struct {
+    index: u32,
+};
+
+const Geometry = struct {
+    index: u32,
+};
+
+const Mesh = struct {
+    geometry: Geometry,
+    material: Material,
+    trans: Transform,
+};
+
+const Model = struct {
+    meshes: []Mesh,
+};
+
+const ModelInstance = struct {
+    model_id: u32,
+    trans: Transform,
+};
+
+const GeometryStorage = struct {
+    //eachone should be able to be removed and reloaded as needed
+    // for example because we do not really use local geometry we should be able to just unload it an lazyly load it back
+    local: emma.geometry_.local_geometry,
+    //same here
+    device: emma.device_geometry,
+
+    //this one doesn't really need to exist I could make them lazyly
+    // rt_geometry: emma.raytracing_geometry_data,
+};
+const Resources = struct {
+    //this should be a multiarray list
+    geometry_storage: std.MultiArrayList(GeometryStorage),
+
+    mesh_storage: []Mesh,
+    model_storage: []Model,
+};
+
+fn build_local_geometry(
+    allocator: std.mem.Allocator,
+    list: []const [:0]const u8,
+) ![]emma.geometry_.local_geometry {
+    var local_geometries = try std.ArrayList(emma.geometry_.local_geometry).initCapacity(allocator, list.len);
+    for (list) |filepath| {
+        var timer = try std.time.Timer.start();
+        const obj_model = blk0: {
+            const file = try std.fs.cwd().openFile(filepath, .{});
+            const d = try emma.readfile_alloc(allocator, file);
+            const m1 = try emma.obj.parseObj(allocator, d);
+            std.debug.print("loaded {s} in {d:.2}ms\n", .{ filepath, emma.ns_to_ms(timer.lap()) });
+            break :blk0 m1;
+        };
+        try local_geometries.append(allocator, try emma.geometry_.local_geometry.from_obj(allocator, &obj_model));
+    }
+    return local_geometries.items;
+}
+
+fn build_device_geometry(
+    allocator: std.mem.Allocator,
+    u: *emma.vlk_unit,
+    local_geometries: []emma.geometry_.local_geometry,
+    gp: emma.general_purpose,
+) ![]emma.device_geometry {
+    // var timer = try std.time.Timer.start();
+    var device_geometries = try std.ArrayList(emma.device_geometry).initCapacity(allocator, 10);
+    var staging_buffers = try std.ArrayList(emma.vlk_vma_buffer).initCapacity(allocator, 4);
+    defer {
+        for (staging_buffers.items) |sb| {
+            sb.deinit(&u.vma);
+        }
+        staging_buffers.deinit(allocator);
+    }
+    try gp.begin();
+    for (local_geometries) |mesh| {
+        try device_geometries.append(allocator, blk0: {
+            const result = try emma.device_geometry.init_from_mesh(
+                allocator,
+                &staging_buffers,
+                &u.vma,
+                gp.cmd,
+                &mesh,
+            );
+            break :blk0 result;
+        });
+    }
+    try gp.submit_and_wait(u.queue(), u.device.logical_device);
+
+    // std.debug.print("loaded gpu meshes in {d:.2}ms\n", .{emma.ns_to_ms(timer.lap())});
+    return device_geometries.items;
+}
+
+fn build_rt_geometry(
+    allocator: std.mem.Allocator,
+    u: *emma.vlk_unit,
+    device_geometries: []emma.device_geometry,
+) !std.MultiArrayList(emma.raytracing_geometry_data) {
+    var rt_geometry_storage = std.MultiArrayList(emma.raytracing_geometry_data){};
+    try rt_geometry_storage.ensureTotalCapacity(allocator, device_geometries.len);
+
+    for (0..device_geometries.len) |i| {
+        const rt_g = emma.raytracing_geometry_data.init(device_geometries, @intCast(i), &u.device);
+        try rt_geometry_storage.append(allocator, rt_g);
+    }
+
+    return rt_geometry_storage;
+}
+
 pub fn main() !void {
+    // const resource_manager = Resources{};
+    // _ = resource_manager;
+
     try emma.sdl_init();
     defer emma.sdl_deinit();
 
@@ -78,74 +207,32 @@ pub fn main() !void {
         &u.device,
         command_buffers.buffers[0],
     );
+
+    const meshes = try build_local_geometry(allocator, &geometry_list);
+    const device_meshes = try build_device_geometry(allocator, &u, meshes, gp);
+
+    // this one doesn't really need to exist anymore
+    // it is just a view into our device buffers pretty much
+    // const rt_geometry_storage = try build_rt_geometry(allocator, &u, device_meshes);
+
     defer gp.deinit(&u.device);
-
-    const meshes = blk: {
-        var m = try std.ArrayList(emma.mesh.local_mesh).initCapacity(allocator, 5);
-        for (models) |filepath| {
-            var timer = try std.time.Timer.start();
-            const obj_model = blk0: {
-                const file = try std.fs.cwd().openFile(filepath, .{});
-                const d = try emma.readfile_alloc(allocator, file);
-                const m1 = try emma.obj.parseObj(allocator, d);
-                std.debug.print("loaded {s} in {d:.2}ms\n", .{ filepath, emma.ns_to_ms(timer.lap()) });
-                break :blk0 m1;
-            };
-            try m.append(allocator, try emma.mesh.local_mesh.from_obj(allocator, &obj_model));
-        }
-        break :blk m.items;
-    };
-
-    const gpu_meshes = blk: {
-        var gm = try std.ArrayList(emma.gpu_mesh).initCapacity(allocator, 10);
-        var timer = try std.time.Timer.start();
-        for (meshes) |mesh| {
-            try gm.append(allocator, blk0: {
-                try gp.begin();
-                var staging_buffers = try std.ArrayList(emma.vlk_vma_buffer).initCapacity(allocator, 4);
-                defer {
-                    for (staging_buffers.items) |sb| {
-                        sb.deinit(&u.vma);
-                    }
-                    staging_buffers.deinit(allocator);
-                }
-                const result = try emma.gpu_mesh.init_from_mesh(
-                    allocator,
-                    &staging_buffers,
-                    &u.vma,
-                    gp.cmd,
-                    &mesh,
-                );
-                try gp.submit_and_wait(u.queue(), u.device.logical_device);
-                break :blk0 result;
-            });
-        }
-        std.debug.print("loaded gpu meshes in {d:.2}ms\n", .{emma.ns_to_ms(timer.lap())});
-        break :blk try gm.toOwnedSlice(allocator);
-    };
-
+    defer allocator.free(meshes);
     defer {
-        for (gpu_meshes) |mesh|
+        for (device_meshes) |mesh| {
             mesh.deinit(&u.vma);
-        allocator.free(gpu_meshes);
-    }
-
-    var geometry_storage = std.MultiArrayList(emma.raytracing_geometry_data){};
-    try geometry_storage.ensureTotalCapacity(allocator, gpu_meshes.len);
-    for (0..gpu_meshes.len) |i| {
-        const geometry = emma.raytracing_geometry_data.init(gpu_meshes, @intCast(i), &u.device);
-        try geometry_storage.append(allocator, geometry);
+        }
+        allocator.free(device_meshes);
     }
 
     // Idealy user controled
     // along with a transformation list
+    // if this get's updated the blas_geometry_storage, blas_ranges, blas_list needs to be re made
     const blas0 = [_]u32{0};
     const blas1 = [_]u32{1};
     const blas2 = [_]u32{2};
     const blas3 = [_]u32{3};
     const blas4 = [_]u32{4};
     const blas5 = [_]u32{5};
-
     const blas_mapping_ranges = [_][]const u32{
         &blas0,
         &blas1,
@@ -154,6 +241,19 @@ pub fn main() !void {
         &blas4,
         &blas5,
     };
+    var instance_transforms = try std.ArrayList(vk.TransformMatrixKHR).initCapacity(allocator, 10);
+    for (blas_mapping_ranges) |b| {
+        _ = b;
+
+        const pos = emma.mth.vec.fzero();
+        const rot = emma.mth.vec.fzero();
+        const scale = emma.mth.vec.fone();
+
+        const mat = emma.mth.model(pos, rot, scale);
+
+        const vk_trans = emma.mth_to_vk_transform_matrix(mat);
+        try instance_transforms.append(allocator, vk_trans);
+    }
 
     var blas_geometry_storage = std.MultiArrayList(emma.raytracing_geometry_data){};
     try blas_geometry_storage.ensureTotalCapacity(allocator, 5);
@@ -162,7 +262,8 @@ pub fn main() !void {
     for (blas_mapping_ranges) |range| {
         const begin = blas_geometry_storage.len;
         for (range) |j| {
-            try blas_geometry_storage.append(allocator, geometry_storage.get(j));
+            const geometry = emma.raytracing_geometry_data.init(device_meshes, @intCast(j), &u.device);
+            try blas_geometry_storage.append(allocator, geometry);
         }
         try blas_ranges.append(allocator, .{ .begin = @intCast(begin), .len = @intCast(range.len) });
     }
@@ -198,19 +299,6 @@ pub fn main() !void {
         allocator.free(blas_list.items);
     }
 
-    // have this user controled
-    var instance_transforms = try std.ArrayList(vk.TransformMatrixKHR).initCapacity(allocator, 10);
-    for (blas_list.items) |b| {
-        _ = b;
-        try instance_transforms.append(allocator, .{
-            .matrix = .{
-                .{ 1, 0, 0, 0 },
-                .{ 0, 1, 0, 0 },
-                .{ 0, 0, 1, 0 },
-            },
-        });
-    }
-
     try gp.begin();
     var staging_pool = try std.ArrayList(emma.vlk_vma_buffer).initCapacity(allocator, 10);
     defer {
@@ -220,9 +308,9 @@ pub fn main() !void {
         staging_pool.deinit(allocator);
     }
     const buffers = blk: {
-        var buffers_info = try std.ArrayList(PC.Buffers).initCapacity(allocator, gpu_meshes.len);
+        var buffers_info = try std.ArrayList(PC.Buffers).initCapacity(allocator, device_meshes.len);
 
-        for (gpu_meshes) |mesh| {
+        for (device_meshes) |mesh| {
             buffers_info.appendAssumeCapacity(
                 .{
                     .verts = mesh.vertex_buffer.address(&u.device),
@@ -477,9 +565,7 @@ pub fn main() !void {
         {
             var swapchain = try emma.vlk_swapchain.init(
                 allocator,
-                &u.vki,
-                &u.device,
-                &u.window,
+                &u,
                 @intCast(width),
                 @intCast(height),
             );
@@ -504,7 +590,6 @@ pub fn main() !void {
             const image_available = try allocator.alloc(vk.Semaphore, swapchain.images.len);
             @memset(image_available, .null_handle);
             const render_finished = try allocator.alloc(vk.Semaphore, swapchain.images.len);
-
             defer {
                 for (image_available) |s| {
                     if (s != .null_handle) u.device.logical_device.destroySemaphore(s, null);
@@ -541,15 +626,10 @@ pub fn main() !void {
                         switch (event) {
                             .quit => quit = true,
                             .terminating => quit = true,
-                            .mouse_motion => |mm| {
-                                mouse = .{
-                                    .x = mm.x,
-                                    .y = mm.y,
-                                };
-                            },
+                            .mouse_motion => |mm| mouse = .{ .x = mm.x, .y = mm.y },
                             .key_down => |key| key_state[@intFromEnum(key.scancode.?)] = true,
                             .key_up => |key| key_state[@intFromEnum(key.scancode.?)] = false,
-                            .window_resized => |e| swapchain.resize(&u.vki, &u.device, &u.window, @intCast(e.width), @intCast(e.height)),
+                            .window_resized => |e| swapchain.resize(&u, @intCast(e.width), @intCast(e.height)),
                             else => {},
                         }
                     }
@@ -611,15 +691,16 @@ pub fn main() !void {
                             @intCast(tiles[1].len),
                             1,
                         );
+
+                        {
+                            tiles[0] = emma.next_tile(tiles[0].pos, tile_pixel_strides[0], render_texture_width);
+                            if (tiles[0].pos == 0)
+                                tiles[1] = emma.next_tile(tiles[1].pos, tile_pixel_strides[1], render_texture_height);
+                        }
                     } else {
                         // quit = true;
                     }
 
-                    if (!done) {
-                        tiles[0] = emma.next_tile(tiles[0].pos, tile_pixel_strides[0], render_texture_width);
-                        if (tiles[0].pos == 0)
-                            tiles[1] = emma.next_tile(tiles[1].pos, tile_pixel_strides[1], render_texture_height);
-                    }
                     const frame_done = (tiles[0].pos == 0 and tiles[1].pos == 0);
 
                     if (frame_done and !done) {
@@ -779,7 +860,7 @@ pub fn main() !void {
             {
                 time_ms = std.time.milliTimestamp() - render_begin;
                 time_sec = @as(f32, @floatFromInt(time_ms)) / 1000;
-                std.debug.print("ran for {d} with avg ms {d}\n", .{ time_sec, avg_ms });
+                std.debug.print("ran for {d} with avg ms per full frame {d:.2}\n", .{ time_sec, avg_ms });
             }
 
             //dump texture

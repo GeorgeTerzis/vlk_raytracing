@@ -3,15 +3,17 @@ const builtin = @import("builtin");
 pub const obj = @import("obj");
 pub const sdl = @import("sdl3");
 pub const vk = @import("vulkan");
-pub const mesh = @import("mesh.zig");
-// pub const mth = @import("mth");
-// pub const zigimg = @import("zigimg");
+pub const geometry_ = @import("mesh.zig");
+
 pub const c_vma = @cImport({
     @cInclude("vma.h");
 });
 pub const tinyexr = @cImport({
     @cInclude("tinyexr.h");
 });
+
+pub const mth = @import("mth");
+// pub const zigimg = @import("zigimg");
 
 pub fn ns_to_ms(now: u64) f32 {
     return @as(f32, @floatFromInt(now)) / 1_000_000.0;
@@ -29,6 +31,7 @@ pub fn to_ptr(comptime T: type, in: anytype) T {
 const validation_layers: []const [*:0]const u8 = &.{
     "VK_LAYER_KHRONOS_validation",
 };
+
 const required_device_extensions: []const [*:0]const u8 = &.{
     vk.extensions.khr_swapchain.name,
     vk.extensions.khr_ray_tracing_pipeline.name,
@@ -353,7 +356,7 @@ pub const vlk_device = struct {
             break :blk deviceProxy;
         };
 
-        const queue = try vlk_queue.init(logical_device, queue_index, 0);
+        const queue = try vlk_queue.init2(logical_device, queue_index, 0);
 
         return .{
             .physical_device = physical_device,
@@ -372,10 +375,39 @@ pub const vlk_device = struct {
 };
 
 pub const vlk_queue = struct {
-    pub fn init(device: vk.DeviceProxy, family_index: u32, index: u32) !vk.QueueProxy {
+    proxy: vk.QueueProxy,
+    family_index: u32,
+    queue_index: u32,
+
+    pub fn init(device: vk.DeviceProxy, family_index: u32, queue_index: u32) !vlk_queue {
+        const queue = device.getDeviceQueue(family_index, queue_index);
+        const proxy = vk.QueueProxy.init(queue, device.wrapper);
+        return .{
+            .proxy = proxy,
+            .family_index = family_index,
+            .queue_index = queue_index,
+        };
+    }
+
+    pub fn init2(device: vk.DeviceProxy, family_index: u32, index: u32) !vk.QueueProxy {
         const queue = device.getDeviceQueue(family_index, index);
         const proxy = vk.QueueProxy.init(queue, device.wrapper);
         return proxy;
+    }
+
+    // pub fn create_command_pool(self: vlk_queue, device: vk.DeviceProxy) !vk.CommandPool {
+    //     return device.createCommandPool(&.{
+    //         .queue_family_index = self.family_index,
+    //         .flags = .{ .reset_command_buffer_bit = true },
+    //     }, null);
+    // }
+
+    pub fn submit(self: vlk_queue, submits: []const vk.SubmitInfo2, fence: vk.Fence) !void {
+        try self.queue.submit2(submits.len, submits.ptr, fence);
+    }
+
+    pub fn wait_idle(self: vlk_queue) !void {
+        try self.queue.waitIdle();
     }
 };
 
@@ -385,7 +417,9 @@ pub const vlk_command_pool = struct {
     pub fn init(device: *vlk_device) !vlk_command_pool {
         const info = vk.CommandPoolCreateInfo{
             .queue_family_index = device.queue_family_index,
-            .flags = .{ .reset_command_buffer_bit = true },
+            .flags = .{
+                .reset_command_buffer_bit = true,
+            },
         };
 
         const pool = try device.logical_device.createCommandPool(&info, null);
@@ -393,6 +427,23 @@ pub const vlk_command_pool = struct {
         return .{
             .handle = pool,
         };
+    }
+
+    pub fn alloc_buffers(
+        self: @This(),
+        allocator: std.mem.Allocator,
+        device: vk.DeviceProxy,
+        count: u32,
+        level: vk.CommandBufferLevel,
+    ) ![]vk.CommandBuffer {
+        const info = vk.CommandBufferAllocateInfo{
+            .command_pool = self.handle,
+            .level = level,
+            .command_buffer_count = count,
+        };
+        const buffers = try allocator.alloc(vk.CommandBuffer, count);
+        try device.allocateCommandBuffers(&info, buffers.ptr);
+        return buffers;
     }
 
     pub fn deinit(self: vlk_command_pool, device: vk.DeviceProxy) void {
@@ -465,13 +516,11 @@ pub fn create_swapchain_images(
     format: vk.Format,
     extent: vk.Extent3D,
 ) ![]vlk_image {
-    // Get the images from the swapchain
     const images = try device.logical_device.getSwapchainImagesAllocKHR(swapchain, allocator);
 
     const mip_levels = 1;
     const count = images.len;
 
-    // Allocate array for vlk_image wrappers
     const vimages = try allocator.alloc(vlk_image, count);
 
     for (images, 0..) |image, i| {
@@ -508,11 +557,14 @@ pub const vlk_swapchain = struct {
     present_mode: vk.PresentModeKHR,
     allocator: std.mem.Allocator,
 
-    pub fn resize(self: *@This(), vki: *vlk_instance, device: *vlk_device, window: *vlk_window, width: u32, height: u32) void {
+    pub fn resize(
+        self: *@This(),
+        u: *vlk_unit,
+        width: u32,
+        height: u32,
+    ) void {
         self.rebuild(
-            vki,
-            device,
-            window,
+            u,
             width,
             height,
         ) catch |err| switch (err) {
@@ -616,26 +668,22 @@ pub const vlk_swapchain = struct {
 
     pub fn init(
         allocator: std.mem.Allocator,
-        instance: *vlk_instance,
-        device: *vlk_device,
-        window: *vlk_window,
+        u: *vlk_unit,
         width: u32,
         height: u32,
     ) !vlk_swapchain {
-        return create(allocator, instance, device, window, width, height, null);
+        return create(allocator, &u.vki, &u.device, &u.window, width, height, null);
     }
 
     pub fn rebuild(
-        self: *vlk_swapchain,
-        instance: *vlk_instance,
-        device: *vlk_device,
-        window: *vlk_window,
+        self: *@This(),
+        u: *vlk_unit,
         width: u32,
         height: u32,
     ) !void {
-        try device.logical_device.deviceWaitIdle();
-        const new = try create(self.allocator, instance, device, window, width, height, self);
-        self.deinit(device);
+        try u.device.logical_device.deviceWaitIdle();
+        const new = try create(self.allocator, &u.vki, &u.device, &u.window, width, height, self);
+        self.deinit(&u.device);
         self.* = new;
     }
 
@@ -819,7 +867,7 @@ pub const vlk_unit = struct {
     vma: vlk_vma,
     samplers: vlk_samplers,
 
-    pub fn queue(self: @This()) vk.QueueProxy {
+    pub fn queue(self: *@This()) vk.QueueProxy {
         return self.device.queue;
     }
 
@@ -839,7 +887,7 @@ pub const vlk_unit = struct {
         };
     }
 
-    pub fn deinit(self: @This(), allocator: std.mem.Allocator) void {
+    pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
         self.samplers.deinit(self.device.logical_device);
         self.window.deinit();
         self.vma.deinit();
@@ -1597,7 +1645,7 @@ pub const vlk_raytracing_pipeline = struct {
     }
 };
 
-pub const gpu_mesh = struct {
+pub const device_geometry = struct {
     vertex_buffer: vlk_vma_buffer,
     index_buffer: vlk_vma_buffer,
 
@@ -1616,8 +1664,8 @@ pub const gpu_mesh = struct {
         staging_buffers: *std.ArrayList(vlk_vma_buffer),
         vma: *vlk_vma,
         cmd: vk.CommandBufferProxy,
-        m: *const mesh.local_mesh,
-    ) !gpu_mesh {
+        m: *const geometry_.local_geometry,
+    ) !device_geometry {
         const vertex_bytes = std.mem.sliceAsBytes(m.verts);
         const index_bytes = std.mem.sliceAsBytes(m.indices);
 
@@ -1910,7 +1958,7 @@ pub const raytracing_geometry_data = struct {
     index: u32,
 
     pub fn init(
-        meshes: []gpu_mesh,
+        meshes: []device_geometry,
         index: u32,
         device: *vlk_device,
     ) raytracing_geometry_data {
@@ -2515,4 +2563,12 @@ pub fn set_create_info(set: []const vk.DescriptorSetLayoutBinding) vk.Descriptor
 pub fn set_create_layout(device: *vlk_device, set: []const vk.DescriptorSetLayoutBinding) !vk.DescriptorSetLayout {
     const infos = set_create_info(set); // maybe separte this?
     return try device.logical_device.createDescriptorSetLayout(&infos, null);
+}
+
+pub fn mth_to_vk_transform_matrix(m: mth.mat4) vk.TransformMatrixKHR {
+    return .{ .matrix = .{
+        .{ m[0][0], m[0][1], m[0][2], m[0][3] },
+        .{ m[1][0], m[1][1], m[1][2], m[1][3] },
+        .{ m[2][0], m[2][1], m[2][2], m[2][3] },
+    } };
 }

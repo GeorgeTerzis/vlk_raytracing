@@ -22,16 +22,17 @@ pub fn build(b: *std.Build) void {
         "-o",
         "src/shaders/hw_raytracing/shader.spv",
     });
+
     compile_shader.setName("slangc");
     shader_step.dependOn(&compile_shader.step);
     exe.step.dependOn(&compile_shader.step);
     b.getInstallStep().dependOn(&compile_shader.step);
 
-    // const mth = b.addModule("mth", .{
-    //     .root_source_file = b.path("src/mth.zig"),
-    //     .target = target,
-    //     .optimize = optimize,
-    // });
+    const mth = b.addModule("mth", .{
+        .root_source_file = b.path("src/mth.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
 
     const emma = b.addModule("emma", .{
         .root_source_file = b.path("src/root.zig"),
@@ -77,7 +78,7 @@ pub fn build(b: *std.Build) void {
     exe.linkSystemLibrary("z");
     // exe.addLibraryPath(b.path("vk_deps/cxx_vma"));
 
-    // emma.addImport("mth", mth);
+    emma.addImport("mth", mth);
     emma.addImport("obj", obj_mod);
     emma.addImport("vulkan", vulkan.module("vulkan-zig"));
     emma.addImport("sdl3", sdl3.module("sdl3"));

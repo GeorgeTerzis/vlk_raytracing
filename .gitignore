@@ -6,7 +6,6 @@
 src/shaders/raytracing_recursive
 src/shaders/hwrt_backup
 src/shaders/noise
-src/mth
 
 *.spv
 
