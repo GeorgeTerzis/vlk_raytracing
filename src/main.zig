@@ -17,6 +17,10 @@ const vma = emma.c_vma;
 //     scale: [3]f32,
 // };
 
+const MousePos = extern struct {
+    x: f32,
+    y: f32,
+};
 const PC = extern struct {
     const Buffers = struct {
         verts: u64,
@@ -34,17 +38,20 @@ const PC = extern struct {
         geometry_indices: u64,
     };
 
-    width: u32,
-    height: u32,
-    time: f32,
-    frame: u32,
+    width: u32 = 0,
+    height: u32 = 0,
+    time: f32 = 0.0,
+    frame: u32 = 0.0,
 
-    posx: u32,
-    posy: u32,
+    posx: u32 = 0.0,
+    posy: u32 = 0.0,
 
-    buffers: u64,
-    geometries: u64,
-    ranges: u64,
+    mouse: MousePos = .{ .x = 0, .y = 0 },
+
+    buffers: u64 = 0,
+    geometries: u64 = 0,
+    ranges: u64 = 0,
+    materials: u64 = 0,
 };
 
 const geometry_list = [_][:0]const u8{
@@ -56,10 +63,83 @@ const geometry_list = [_][:0]const u8{
     "./src/models/scene/monolith.obj",
 };
 
-const mouse_state = struct {
-    x: f32,
-    y: f32,
-};
+fn Handle(comptime T: type) type {
+    const Self = struct {
+        data: u32 = 0,
+
+        pub const Type = T;
+        pub const __Handle_mark = void;
+
+        pub fn from_int(i: u32) @This() {
+            return .{ .data = i };
+        }
+    };
+
+    return Self;
+}
+fn is_Handle(comptime T: type) bool {
+    return @hasDecl(T, "__is_handle");
+}
+
+fn Allocator(comptime T: type) type {
+    const H = Handle(T);
+
+    const Self = struct {
+        const Self = @This();
+        pub const Handle = H;
+
+        data: std.ArrayList(T),
+        free: std.ArrayList(u32),
+
+        pub fn init_capacity(allocator: std.mem.Allocator, capacity: usize) Self {
+            return .{
+                .data = std.ArrayList(T).initCapacity(allocator, capacity),
+                .free = std.ArrayList(u32).initCapacity(allocator, capacity / 2),
+            };
+        }
+        pub fn init_from_buffers(allocator: std.mem.Allocator, list: std.ArrayList(T)) Self {
+            return .{
+                .data = list,
+                .free = std.ArrayList(u32).init(allocator, list.items.len / 2),
+            };
+        }
+
+        pub fn deinit(self: *Self) void {
+            self.data.deinit();
+            self.free.deinit();
+        }
+
+        pub fn add(self: *Self, value: T) !H {
+            if (self.free.items.len > 0) {
+                const index = self.free.pop();
+                self.data.items[index] = value;
+                return .{ .index = index };
+            }
+
+            const index: u32 = @intCast(self.data.items.len);
+            try self.data.append(value);
+            return .{ .index = index };
+        }
+
+        pub fn remove(self: *Self, handle: H) !void {
+            const index = handle.index;
+            if (index >= self.data.items.len) return error.InvalidIndex;
+
+            try self.free.append(index);
+            self.data.items[index] = undefined;
+        }
+
+        pub fn get_val(self: *Self, handle: H) T {
+            return self.data.items[handle.index];
+        }
+
+        pub fn get_ptr(self: *Self, handle: H) *T {
+            return &self.data.items[handle.index];
+        }
+    };
+
+    return Self;
+}
 
 const Transform = struct {
     pos: emma.mth.vec4,
@@ -67,52 +147,26 @@ const Transform = struct {
     scale: emma.mth.vec4,
 };
 
-const Material = struct {
-    index: u32,
+const Node = struct {
+    geometry_handle: u32, // index on a slice
+    material_id: u32, // id for the shader
+    transform: Transform,
 };
 
-const Geometry = struct {
-    index: u32,
+const Asset = struct {
+    nodes: []u32,
 };
 
-const Mesh = struct {
-    geometry: Geometry,
-    material: Material,
-    trans: Transform,
-};
-
-const Model = struct {
-    meshes: []Mesh,
-};
-
-const ModelInstance = struct {
-    model_id: u32,
-    trans: Transform,
-};
-
-const GeometryStorage = struct {
-    //eachone should be able to be removed and reloaded as needed
-    // for example because we do not really use local geometry we should be able to just unload it an lazyly load it back
-    local: emma.geometry_.local_geometry,
-    //same here
-    device: emma.device_geometry,
-
-    //this one doesn't really need to exist I could make them lazyly
-    // rt_geometry: emma.raytracing_geometry_data,
-};
 const Resources = struct {
-    //this should be a multiarray list
-    geometry_storage: std.MultiArrayList(GeometryStorage),
-
-    mesh_storage: []Mesh,
-    model_storage: []Model,
+    local: []emma.local_geometry.geometry,
+    device: []emma.device_geometry,
 };
 
 fn build_local_geometry(
     allocator: std.mem.Allocator,
     list: []const [:0]const u8,
-) ![]emma.geometry_.local_geometry {
-    var local_geometries = try std.ArrayList(emma.geometry_.local_geometry).initCapacity(allocator, list.len);
+) ![]emma.local_geometry.geometry {
+    var local_geometries = try std.ArrayList(emma.local_geometry.geometry).initCapacity(allocator, list.len);
     for (list) |filepath| {
         var timer = try std.time.Timer.start();
         const obj_model = blk0: {
@@ -122,7 +176,7 @@ fn build_local_geometry(
             std.debug.print("loaded {s} in {d:.2}ms\n", .{ filepath, emma.ns_to_ms(timer.lap()) });
             break :blk0 m1;
         };
-        try local_geometries.append(allocator, try emma.geometry_.local_geometry.from_obj(allocator, &obj_model));
+        try local_geometries.append(allocator, try emma.local_geometry.geometry.from_obj(allocator, &obj_model));
     }
     return local_geometries.items;
 }
@@ -130,10 +184,9 @@ fn build_local_geometry(
 fn build_device_geometry(
     allocator: std.mem.Allocator,
     u: *emma.vlk_unit,
-    local_geometries: []emma.geometry_.local_geometry,
-    gp: emma.general_purpose,
+    local_geometries: []emma.local_geometry.geometry,
+    is: emma.ImediateSubmit,
 ) ![]emma.device_geometry {
-    // var timer = try std.time.Timer.start();
     var device_geometries = try std.ArrayList(emma.device_geometry).initCapacity(allocator, 10);
     var staging_buffers = try std.ArrayList(emma.vlk_vma_buffer).initCapacity(allocator, 4);
     defer {
@@ -142,39 +195,20 @@ fn build_device_geometry(
         }
         staging_buffers.deinit(allocator);
     }
-    try gp.begin();
+    try is.begin();
     for (local_geometries) |mesh| {
-        try device_geometries.append(allocator, blk0: {
-            const result = try emma.device_geometry.init_from_mesh(
-                allocator,
-                &staging_buffers,
-                &u.vma,
-                gp.cmd,
-                &mesh,
-            );
-            break :blk0 result;
-        });
+        const result = try emma.device_geometry.init_from_mesh(
+            allocator,
+            &staging_buffers,
+            &u.vma,
+            is.cmd,
+            &mesh,
+        );
+        try device_geometries.append(allocator, result);
     }
-    try gp.submit_and_wait(u.queue(), u.device.logical_device);
+    try is.submit_and_wait(u.queue(), u.device.logical_device);
 
-    // std.debug.print("loaded gpu meshes in {d:.2}ms\n", .{emma.ns_to_ms(timer.lap())});
     return device_geometries.items;
-}
-
-fn build_rt_geometry(
-    allocator: std.mem.Allocator,
-    u: *emma.vlk_unit,
-    device_geometries: []emma.device_geometry,
-) !std.MultiArrayList(emma.raytracing_geometry_data) {
-    var rt_geometry_storage = std.MultiArrayList(emma.raytracing_geometry_data){};
-    try rt_geometry_storage.ensureTotalCapacity(allocator, device_geometries.len);
-
-    for (0..device_geometries.len) |i| {
-        const rt_g = emma.raytracing_geometry_data.init(device_geometries, @intCast(i), &u.device);
-        try rt_geometry_storage.append(allocator, rt_g);
-    }
-
-    return rt_geometry_storage;
 }
 
 pub fn main() !void {
@@ -203,70 +237,132 @@ pub fn main() !void {
         10,
     );
 
-    const gp = try emma.general_purpose.init(
+    const is = try emma.ImediateSubmit.init(
         &u.device,
         command_buffers.buffers[0],
     );
 
-    const meshes = try build_local_geometry(allocator, &geometry_list);
-    const device_meshes = try build_device_geometry(allocator, &u, meshes, gp);
+    const local_geometry_storage = try build_local_geometry(allocator, &geometry_list);
+    const device_geometry_storage = try build_device_geometry(allocator, &u, local_geometry_storage, is);
 
-    // this one doesn't really need to exist anymore
-    // it is just a view into our device buffers pretty much
-    // const rt_geometry_storage = try build_rt_geometry(allocator, &u, device_meshes);
+    const re = Resources{
+        .local = local_geometry_storage,
+        .device = device_geometry_storage,
+    };
+    _ = re;
 
-    defer gp.deinit(&u.device);
-    defer allocator.free(meshes);
+    defer is.deinit(&u.device);
+    defer allocator.free(local_geometry_storage);
     defer {
-        for (device_meshes) |mesh| {
+        for (device_geometry_storage) |mesh| {
             mesh.deinit(&u.vma);
         }
-        allocator.free(device_meshes);
+        allocator.free(device_geometry_storage);
     }
 
-    // Idealy user controled
-    // along with a transformation list
-    // if this get's updated the blas_geometry_storage, blas_ranges, blas_list needs to be re made
-    const blas0 = [_]u32{0};
-    const blas1 = [_]u32{1};
-    const blas2 = [_]u32{2};
-    const blas3 = [_]u32{3};
-    const blas4 = [_]u32{4};
-    const blas5 = [_]u32{5};
-    const blas_mapping_ranges = [_][]const u32{
-        &blas0,
-        &blas1,
-        &blas2,
-        &blas3,
-        &blas4,
-        &blas5,
+    const dragon_node = Node{
+        .geometry_handle = 0,
+        .material_id = 0,
+        .transform = .{
+            .pos = emma.mth.vec.fzero(),
+            .rot = emma.mth.vec.fzero(),
+            .scale = .{ 1, 1, 1, 1 },
+        },
     };
-    var instance_transforms = try std.ArrayList(vk.TransformMatrixKHR).initCapacity(allocator, 10);
-    for (blas_mapping_ranges) |b| {
-        _ = b;
+    const curtain_node = Node{
+        .geometry_handle = 1,
+        .material_id = 1,
+        .transform = .{
+            .pos = emma.mth.vec.fzero(),
+            .rot = emma.mth.vec.fzero(),
+            .scale = emma.mth.vec.fone(),
+        },
+    };
+    const building_node = Node{
+        .geometry_handle = 2,
+        .material_id = 3,
+        .transform = .{
+            .pos = emma.mth.vec.fzero(),
+            .rot = emma.mth.vec.fzero(),
+            .scale = emma.mth.vec.fone(),
+        },
+    };
+    const sphere_node = Node{
+        .geometry_handle = 3,
+        .material_id = 2,
+        .transform = .{
+            .pos = .{ 0, 0, 0, 0 },
+            .rot = emma.mth.vec.fzero(),
+            .scale = .{ 1, 1, 1, 1 },
+        },
+    };
+    const light_node = Node{
+        .geometry_handle = 4,
+        .material_id = 0,
+        .transform = .{
+            .pos = .{ 0, 0, 0, 0 },
+            .rot = emma.mth.vec.fzero(),
+            .scale = emma.mth.vec.fone(),
+        },
+    };
+    const monolith_node = Node{
+        .geometry_handle = 5,
+        .material_id = 2,
+        .transform = .{
+            .pos = emma.mth.vec.fzero(),
+            .rot = emma.mth.vec.fzero(),
+            .scale = emma.mth.vec.fone(),
+        },
+    };
 
-        const pos = emma.mth.vec.fzero();
-        const rot = emma.mth.vec.fzero();
-        const scale = emma.mth.vec.fone();
-
-        const mat = emma.mth.model(pos, rot, scale);
-
-        const vk_trans = emma.mth_to_vk_transform_matrix(mat);
-        try instance_transforms.append(allocator, vk_trans);
-    }
+    const nodes = [_]Node{
+        dragon_node,
+        curtain_node,
+        building_node,
+        sphere_node,
+        light_node,
+        monolith_node,
+    };
 
     var blas_geometry_storage = std.MultiArrayList(emma.raytracing_geometry_data){};
     try blas_geometry_storage.ensureTotalCapacity(allocator, 5);
+    var materials_storage = try std.ArrayList(u32).initCapacity(allocator, 5);
+
+    defer materials_storage.deinit(allocator);
 
     var blas_ranges = try std.ArrayList(emma.blas_geometry_range).initCapacity(allocator, 5);
-    for (blas_mapping_ranges) |range| {
+    var materials = try std.ArrayList(u32).initCapacity(allocator, 5);
+    var instance_transforms = try std.ArrayList(vk.TransformMatrixKHR).initCapacity(allocator, 5);
+    for (nodes) |node| {
         const begin = blas_geometry_storage.len;
-        for (range) |j| {
-            const geometry = emma.raytracing_geometry_data.init(device_meshes, @intCast(j), &u.device);
-            try blas_geometry_storage.append(allocator, geometry);
+        {
+            const len = 1;
+            {
+                {
+                    {
+                        const geometry = emma.raytracing_geometry_data.init(device_geometry_storage, @intCast(node.geometry_handle), &u.device);
+                        try blas_geometry_storage.append(allocator, geometry);
+                    }
+                    {
+                        const pos = node.transform.pos;
+                        const rot = node.transform.rot;
+                        const scale = node.transform.scale;
+                        const mat = emma.mth.model(pos, rot, scale);
+                        const vk_trans = emma.mth_to_vk_transform_matrix(mat);
+                        try instance_transforms.append(allocator, vk_trans);
+                    }
+                    {
+                        const material = node.material_id;
+                        try materials_storage.append(allocator, material);
+                        try materials.append(allocator, material);
+                    }
+                }
+
+                try blas_ranges.append(allocator, .{ .begin = @intCast(begin), .len = @intCast(len) });
+            }
         }
-        try blas_ranges.append(allocator, .{ .begin = @intCast(begin), .len = @intCast(range.len) });
     }
+    defer materials.deinit(allocator);
 
     var blas_list = try std.ArrayList(emma.raytracing_acceleration_structure).initCapacity(allocator, 10);
     {
@@ -286,7 +382,7 @@ pub fn main() !void {
                 geometries,
                 ranges,
                 .{},
-                gp,
+                is,
             );
             try blas_list.append(allocator, blas);
         }
@@ -299,7 +395,7 @@ pub fn main() !void {
         allocator.free(blas_list.items);
     }
 
-    try gp.begin();
+    try is.begin();
     var staging_pool = try std.ArrayList(emma.vlk_vma_buffer).initCapacity(allocator, 10);
     defer {
         for (staging_pool.items) |buffer| {
@@ -307,10 +403,30 @@ pub fn main() !void {
         }
         staging_pool.deinit(allocator);
     }
-    const buffers = blk: {
-        var buffers_info = try std.ArrayList(PC.Buffers).initCapacity(allocator, device_meshes.len);
 
-        for (device_meshes) |mesh| {
+    const device_materials = blk: {
+        try staging_pool.append(allocator, try emma.vlk_upload_buffer_with_data(
+            &u.vma,
+            std.mem.sliceAsBytes(materials.items),
+        ));
+        const buffer = try emma.vlk_vma_buffer.init(
+            &u.vma,
+            staging_pool.getLast().size,
+            emma.c_vma.VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                emma.c_vma.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                emma.c_vma.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+            emma.c_vma.VMA_MEMORY_USAGE_AUTO,
+            0,
+        );
+        staging_pool.getLast().cmd_copy_to(&buffer, is.cmd);
+
+        break :blk buffer;
+    };
+
+    const buffers = blk: {
+        var buffers_info = try std.ArrayList(PC.Buffers).initCapacity(allocator, device_geometry_storage.len);
+
+        for (device_geometry_storage) |mesh| {
             buffers_info.appendAssumeCapacity(
                 .{
                     .verts = mesh.vertex_buffer.address(&u.device),
@@ -336,7 +452,7 @@ pub fn main() !void {
             0,
         );
 
-        staging_pool.getLast().cmd_copy_to(&buffer, gp.cmd);
+        staging_pool.getLast().cmd_copy_to(&buffer, is.cmd);
 
         break :blk buffer;
     };
@@ -356,7 +472,7 @@ pub fn main() !void {
             0,
         );
 
-        staging_pool.getLast().cmd_copy_to(&buffer, gp.cmd);
+        staging_pool.getLast().cmd_copy_to(&buffer, is.cmd);
 
         break :blk buffer;
     };
@@ -376,12 +492,14 @@ pub fn main() !void {
             0,
         );
 
-        staging_pool.getLast().cmd_copy_to(&buffer, gp.cmd);
+        staging_pool.getLast().cmd_copy_to(&buffer, is.cmd);
 
         break :blk buffer;
     };
     defer range_buffer.deinit(&u.vma);
-    try gp.submit_and_wait(u.queue(), u.device.logical_device);
+    try is.submit_and_wait(u.queue(), u.device.logical_device);
+
+    var mouse = MousePos{ .x = 0, .y = 0 };
 
     var pc2 = PC{
         .height = 0,
@@ -390,9 +508,11 @@ pub fn main() !void {
         .frame = 0,
         .posx = 0,
         .posy = 0,
+        .mouse = mouse,
         .buffers = buffers.address(&u.device),
         .geometries = geometry_buffer.address(&u.device),
         .ranges = range_buffer.address(&u.device),
+        .materials = device_materials.address(&u.device),
     };
 
     const tlas = try emma.raytracing_acceleration_structure.init_tlas(
@@ -402,7 +522,7 @@ pub fn main() !void {
         blas_list.items,
         instance_transforms.items,
         .{},
-        gp,
+        is,
     );
     defer tlas.deinit(&u.vma, &u.device);
 
@@ -445,7 +565,7 @@ pub fn main() !void {
         &rt_props,
         &u.vma,
         &u.device,
-        gp,
+        is,
         &rt_modules,
     );
     defer pipeline.deinit(&u.vma, &u.device);
@@ -454,9 +574,9 @@ pub fn main() !void {
 
     {
         const descriptor_sizes = [_]vk.DescriptorPoolSize{
-            .{ .descriptor_count = 1024, .type = .combined_image_sampler },
-            .{ .descriptor_count = 1024, .type = .storage_image },
-            .{ .descriptor_count = 1024, .type = .acceleration_structure_khr },
+            .{ .descriptor_count = 10, .type = .combined_image_sampler },
+            .{ .descriptor_count = 10, .type = .storage_image },
+            .{ .descriptor_count = 10, .type = .acceleration_structure_khr },
         };
         const descriptor_pool = try emma.vlk_descriptor_pool.init(
             &u.device,
@@ -491,9 +611,9 @@ pub fn main() !void {
             false,
         );
         {
-            try gp.begin();
+            try is.begin();
             render_texture.cmd_transition(
-                gp.cmd,
+                is.cmd,
                 .{ .top_of_pipe_bit = true },
                 .{ .top_of_pipe_bit = true },
                 .{},
@@ -502,14 +622,14 @@ pub fn main() !void {
                 .general,
                 null,
             );
-            gp.cmd.clearColorImage(
+            is.cmd.clearColorImage(
                 render_texture.handle,
                 .general,
                 @ptrCast(&vk.ClearColorValue{ .float_32 = .{ 0, 0, 0, 0 } }),
                 1,
                 @ptrCast(&render_texture.full_subresource_range()),
             );
-            try gp.submit_and_wait(u.device.queue, u.device.logical_device);
+            try is.submit_and_wait(u.device.queue, u.device.logical_device);
         }
         defer render_texture.deinit(&u.vma, &u.device);
 
@@ -590,6 +710,7 @@ pub fn main() !void {
             const image_available = try allocator.alloc(vk.Semaphore, swapchain.images.len);
             @memset(image_available, .null_handle);
             const render_finished = try allocator.alloc(vk.Semaphore, swapchain.images.len);
+
             defer {
                 for (image_available) |s| {
                     if (s != .null_handle) u.device.logical_device.destroySemaphore(s, null);
@@ -600,22 +721,26 @@ pub fn main() !void {
                 for (render_finished) |s| u.device.logical_device.destroySemaphore(s, null);
                 allocator.free(render_finished);
             }
-            for (render_finished) |*s| s.* = try u.device.logical_device.createSemaphore(&.{}, null);
+
+            for (render_finished) |*s| {
+                s.* = try u.device.logical_device.createSemaphore(&.{}, null);
+            }
 
             var acquire_semaphore = try u.device.logical_device.createSemaphore(&.{}, null);
             defer u.device.logical_device.destroySemaphore(acquire_semaphore, null);
+
             var frame_counter: u32 = 0;
+            var flush_render_texture: bool = true;
+            var accumilation_frame_counter: u32 = 0;
 
-            var mouse = mouse_state{ .x = 0, .y = 0 };
-
-            const tile_pixel_strides = [2]u32{ 512, 512 };
+            const tile_pixel_strides = [2]u32{ 256, 256 };
             var tiles = [2]emma.TileElm{
                 emma.TileElm.init(tile_pixel_strides[0], render_texture_width),
                 emma.TileElm.init(tile_pixel_strides[1], render_texture_height),
             };
 
             var last_present_ms: i64 = 0;
-            var avg_ms: f64 = 0;
+            var avg_ms: f64 = 0.0;
             var avg_n: f64 = 0.0;
 
             var done = false;
@@ -626,13 +751,19 @@ pub fn main() !void {
                         switch (event) {
                             .quit => quit = true,
                             .terminating => quit = true,
-                            .mouse_motion => |mm| mouse = .{ .x = mm.x, .y = mm.y },
+                            .mouse_motion => |mm| {
+                                mouse = .{ .x = mm.x, .y = mm.y };
+                            },
                             .key_down => |key| key_state[@intFromEnum(key.scancode.?)] = true,
                             .key_up => |key| key_state[@intFromEnum(key.scancode.?)] = false,
                             .window_resized => |e| swapchain.resize(&u, @intCast(e.width), @intCast(e.height)),
                             else => {},
                         }
                     }
+                }
+
+                if (key_state[@intFromEnum(sdl.Scancode.func5)]) {
+                    flush_render_texture = true;
                 }
 
                 // Frame  setup
@@ -650,6 +781,35 @@ pub fn main() !void {
                 //Commands
                 {
                     try emma.vlk_cmd_begin_one(frame.cmd);
+
+                    if (flush_render_texture) {
+                        accumilation_frame_counter = 0;
+                        flush_render_texture = false;
+                        frame.cmd.clearColorImage(
+                            render_texture.handle,
+                            .general,
+                            @ptrCast(&vk.ClearColorValue{ .float_32 = .{ 0, 0, 0, 0 } }),
+                            1,
+                            @ptrCast(&render_texture.full_subresource_range()),
+                        );
+
+                        const clear_barrier = vk.ImageMemoryBarrier2{
+                            .src_stage_mask = .{ .clear_bit = true },
+                            .src_access_mask = .{ .transfer_write_bit = true },
+                            .dst_stage_mask = .{ .ray_tracing_shader_bit_khr = true },
+                            .dst_access_mask = .{ .shader_write_bit = true, .shader_read_bit = true },
+                            .old_layout = .general,
+                            .new_layout = .general,
+                            .src_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
+                            .dst_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
+                            .image = render_texture.handle,
+                            .subresource_range = render_texture.full_subresource_range(),
+                        };
+                        frame.cmd.pipelineBarrier2(&.{
+                            .image_memory_barrier_count = 1,
+                            .p_image_memory_barriers = @ptrCast(&clear_barrier),
+                        });
+                    }
                     // rendering
                     if (!done) {
                         frame.cmd.bindPipeline(.ray_tracing_khr, pipeline.pipeline.pipeline);
@@ -669,7 +829,8 @@ pub fn main() !void {
                             pc2.time = time_sec;
                             pc2.posx = tiles[0].pos;
                             pc2.posy = tiles[1].pos;
-                            pc2.frame = frame_counter;
+                            pc2.mouse = mouse;
+                            pc2.frame = accumilation_frame_counter;
                         }
                         frame.cmd.pushConstants(
                             pipeline.pipeline.layout,
@@ -707,6 +868,8 @@ pub fn main() !void {
                         const last_present_diff = now_time_ms - last_present_ms;
                         samples += 1;
                         frame_counter += 1;
+                        accumilation_frame_counter += 1;
+
                         last_present_ms = now_time_ms;
 
                         avg_n += 1;
@@ -718,6 +881,7 @@ pub fn main() !void {
                             acquire_semaphore,
                             .null_handle,
                         );
+
                         const image_index = result.image_index;
                         const prev = image_available[image_index];
                         image_available[image_index] = acquire_semaphore;
@@ -852,8 +1016,10 @@ pub fn main() !void {
                 }
                 frames.advance();
 
-                if (samples > 5000) {
+                if (accumilation_frame_counter > 5000) {
                     done = true;
+                } else {
+                    done = false;
                 }
             }
 
@@ -883,10 +1049,10 @@ pub fn main() !void {
                 };
 
                 {
-                    try gp.begin();
+                    try is.begin();
                     // try emma.vlk_cmd_begin_one(cmd);
                     render_texture.cmd_transition(
-                        gp.cmd,
+                        is.cmd,
                         .{ .ray_tracing_shader_bit_khr = true },
                         .{ .all_transfer_bit = true },
                         .{ .shader_write_bit = true },
@@ -895,7 +1061,7 @@ pub fn main() !void {
                         .transfer_src_optimal,
                         render_texture.full_subresource_range(),
                     );
-                    gp.cmd.copyImageToBuffer(
+                    is.cmd.copyImageToBuffer(
                         render_texture.handle,
                         .transfer_src_optimal,
                         readback.handle,
@@ -903,7 +1069,7 @@ pub fn main() !void {
                         @ptrCast(&region),
                     );
                     render_texture.cmd_transition(
-                        gp.cmd,
+                        is.cmd,
                         .{ .all_transfer_bit = true },
                         .{ .ray_tracing_shader_bit_khr = true },
                         .{ .transfer_read_bit = true },
@@ -912,13 +1078,13 @@ pub fn main() !void {
                         .general,
                         render_texture.full_subresource_range(),
                     );
-                    try gp.cmd.endCommandBuffer();
+                    try is.cmd.endCommandBuffer();
                     const dump_fence = try emma.vlk_fence.init(&u.device, .{});
                     defer dump_fence.deinit(u.device.logical_device);
 
                     try u.device.queue.submit(1, &[1]vk.SubmitInfo{.{
                         .command_buffer_count = 1,
-                        .p_command_buffers = @ptrCast(&gp.cmd.handle),
+                        .p_command_buffers = @ptrCast(&is.cmd.handle),
                     }}, dump_fence.handle);
 
                     try dump_fence.wait_and_reset(u.device.logical_device);

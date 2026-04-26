@@ -1,7 +1,7 @@
 const std = @import("std");
 pub const obj = @import("obj");
 
-pub const local_geometry = struct {
+pub const geometry = struct {
     const vert = [3]f32;
     const normal = [3][3]f32;
     const uv = [2]f32;
@@ -20,7 +20,7 @@ pub const local_geometry = struct {
     pub fn from_obj(
         allocator: std.mem.Allocator,
         obj_data: *const obj.ObjData,
-    ) !local_geometry {
+    ) !geometry {
         var verts = try std.ArrayList(vert).initCapacity(allocator, 512);
         try verts.resize(allocator, (obj_data.vertices.len) / 3);
         @memcpy(verts.items, std.mem.bytesAsSlice([3]f32, std.mem.sliceAsBytes(obj_data.vertices)));

@@ -1,18 +1,16 @@
 const std = @import("std");
 const builtin = @import("builtin");
+
+const c_libs = @import("c_libs.zig");
+pub const c_vma = c_libs.c_vma;
+pub const tinyexr = c_libs.tinyexr;
+
 pub const obj = @import("obj");
 pub const sdl = @import("sdl3");
 pub const vk = @import("vulkan");
-pub const geometry_ = @import("mesh.zig");
-
-pub const c_vma = @cImport({
-    @cInclude("vma.h");
-});
-pub const tinyexr = @cImport({
-    @cInclude("tinyexr.h");
-});
-
 pub const mth = @import("mth");
+pub const local_geometry = @import("mesh.zig");
+
 // pub const zigimg = @import("zigimg");
 
 pub fn ns_to_ms(now: u64) f32 {
@@ -1358,7 +1356,7 @@ pub const vlk_raytracing_pipeline = struct {
             pipeline: vk.Pipeline,
             rt_props: *const vk.PhysicalDeviceRayTracingPipelinePropertiesKHR,
             pipeline_info: vk.RayTracingPipelineCreateInfoKHR,
-            gp: general_purpose,
+            gp: ImediateSubmit,
         ) !shader_binding_table {
 
             //do not touch these for now
@@ -1498,7 +1496,7 @@ pub const vlk_raytracing_pipeline = struct {
         rt_props: *const vk.PhysicalDeviceRayTracingPipelinePropertiesKHR,
         vma: *vlk_vma,
         device: *vlk_device,
-        gp: general_purpose,
+        gp: ImediateSubmit,
         shader_modules: []const vlk_shader_module,
     ) !vlk_raytracing_pipeline {
 
@@ -1664,7 +1662,7 @@ pub const device_geometry = struct {
         staging_buffers: *std.ArrayList(vlk_vma_buffer),
         vma: *vlk_vma,
         cmd: vk.CommandBufferProxy,
-        m: *const geometry_.local_geometry,
+        m: *const local_geometry.geometry,
     ) !device_geometry {
         const vertex_bytes = std.mem.sliceAsBytes(m.verts);
         const index_bytes = std.mem.sliceAsBytes(m.indices);
@@ -1763,7 +1761,7 @@ pub const raytracing_acceleration_structure = struct {
         geometry: []const vk.AccelerationStructureGeometryKHR,
         geometry_range: []const vk.AccelerationStructureBuildRangeInfoKHR,
         flags: vk.BuildAccelerationStructureFlagsKHR,
-        gp: general_purpose,
+        gp: ImediateSubmit,
     ) !raytracing_acceleration_structure {
         var primitive_counts = try std.ArrayList(u32).initCapacity(allocator, geometry_range.len);
         defer primitive_counts.deinit(allocator);
@@ -1859,7 +1857,7 @@ pub const raytracing_acceleration_structure = struct {
         geometry: []const vk.AccelerationStructureGeometryKHR,
         geometry_range: []const vk.AccelerationStructureBuildRangeInfoKHR,
         flags: vk.BuildAccelerationStructureFlagsKHR,
-        gp: general_purpose,
+        gp: ImediateSubmit,
     ) !raytracing_acceleration_structure {
         return init(allocator, vma, device, .bottom_level_khr, geometry, geometry_range, flags, gp);
     }
@@ -1871,7 +1869,7 @@ pub const raytracing_acceleration_structure = struct {
         children: []raytracing_acceleration_structure,
         transforms: []vk.TransformMatrixKHR,
         flags: vk.BuildAccelerationStructureFlagsKHR,
-        gp: general_purpose,
+        gp: ImediateSubmit,
     ) !raytracing_acceleration_structure {
         // build instance array
         var instances = try std.ArrayList(vk.AccelerationStructureInstanceKHR)
@@ -2423,11 +2421,11 @@ pub fn vlk_cmd_begin_one(cmd: vk.CommandBufferProxy) !void {
     });
 }
 
-pub const general_purpose = struct {
+pub const ImediateSubmit = struct {
     fence: vlk_fence,
     cmd: vk.CommandBufferProxy,
 
-    pub fn init(device: *vlk_device, cmd: vk.CommandBufferProxy) !general_purpose {
+    pub fn init(device: *vlk_device, cmd: vk.CommandBufferProxy) !ImediateSubmit {
         const fence = try vlk_fence.init(device, .{});
         return .{ .fence = fence, .cmd = cmd };
     }
@@ -2566,9 +2564,11 @@ pub fn set_create_layout(device: *vlk_device, set: []const vk.DescriptorSetLayou
 }
 
 pub fn mth_to_vk_transform_matrix(m: mth.mat4) vk.TransformMatrixKHR {
-    return .{ .matrix = .{
-        .{ m[0][0], m[0][1], m[0][2], m[0][3] },
-        .{ m[1][0], m[1][1], m[1][2], m[1][3] },
-        .{ m[2][0], m[2][1], m[2][2], m[2][3] },
-    } };
+    return .{
+        .matrix = .{
+            .{ m[0][0], m[0][1], m[0][2], m[0][3] },
+            .{ m[1][0], m[1][1], m[1][2], m[1][3] },
+            .{ m[2][0], m[2][1], m[2][2], m[2][3] },
+        },
+    };
 }
