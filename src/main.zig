@@ -423,6 +423,8 @@ pub fn main() !void {
         break :blk buffer;
     };
 
+    defer device_materials.deinit(&u.vma);
+
     const buffers = blk: {
         var buffers_info = try std.ArrayList(PC.Buffers).initCapacity(allocator, device_geometry_storage.len);
 
