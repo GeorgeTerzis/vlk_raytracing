@@ -1,4 +1,6 @@
 .{
+    .tile = .{ 800, 800 },
+
     .geometry = .{
         .{
             .name = "dragon",
@@ -28,7 +30,7 @@
     .nodes = .{
         .{
             .geometry = "dragon",
-            .material = 0,
+            .material = 3,
             .transform = .{
                 .pos = .{ 0.0, 0.0, 0.0 },
                 .rot = .{ 0.0, 0.0, 0.0 },

@@ -16,11 +16,13 @@ pub const Geometry = struct {
 };
 
 pub const ZonConfig = struct {
+    tile: [2]u32,
     geometry: []Geometry,
     nodes: []Node,
 };
 
 pub const Config = struct {
+    tile: [2]u32,
     geometry: []Geometry,
     nodes: []Node,
 
@@ -41,6 +43,7 @@ pub const Config = struct {
         }
 
         return .{
+            .tile = zon.tile,
             .geometry = zon.geometry,
             .nodes = zon.nodes,
             .geometry_map = geometry_map,
@@ -52,6 +55,7 @@ pub const Config = struct {
         self.geometry_map.deinit();
         self.node_map.deinit();
         std.zon.parse.free(allocator, @as(ZonConfig, .{
+            .tile = self.tile,
             .geometry = self.geometry,
             .nodes = self.nodes,
         }));

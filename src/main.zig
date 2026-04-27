@@ -678,7 +678,7 @@ pub fn main() !void {
             var flush_render_texture: bool = true;
             var accumilation_frame_counter: u32 = 0;
 
-            const tile_pixel_strides = [2]u32{ 500, 500 };
+            const tile_pixel_strides = conf.tile;
             var tiles = [2]emma.TileElm{
                 emma.TileElm.init(tile_pixel_strides[0], render_texture_width),
                 emma.TileElm.init(tile_pixel_strides[1], render_texture_height),

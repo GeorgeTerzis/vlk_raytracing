@@ -1,3 +1,7 @@
 [submodule "vk_deps/stb"]
 	path = vk_deps/stb
 	url = https://github.com/nothings/stb
+[submodule "vk_deps/cxx_vma/VulkanMemoryAllocator"]
+	path = vk_deps/cxx_vma/VulkanMemoryAllocator
+	url = https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git
+	branch = main
