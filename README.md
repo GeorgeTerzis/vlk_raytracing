@@ -30,6 +30,8 @@ to run the program
 ```bash
 ./zig-out/bin/emma
 ```
+## Scene
+Edit the 'scene.zon' file. Rotation for now is ignored.
 
 ## Shaders
 Precompiled shaders are included but just in case you can compile them yourself
