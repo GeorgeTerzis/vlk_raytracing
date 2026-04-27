@@ -2565,3 +2565,13 @@ pub fn mth_to_vk_transform_matrix(m: mth.mat4) vk.TransformMatrixKHR {
         },
     };
 }
+
+pub fn fps_to_ms(fps: u32) f64 {
+    if (fps == 0) return 0.0;
+    return 1000.0 / @as(f64, @floatFromInt(fps));
+}
+
+pub fn ms_to_fps(ms: i64) f64 {
+    if (ms == 0) return 0.0;
+    return 1000.0 / @as(f64, @floatFromInt(ms));
+}

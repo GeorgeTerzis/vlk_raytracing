@@ -58,21 +58,12 @@ pub fn build(b: *std.Build) void {
 
     exe.addCSourceFile(.{
         .file = b.path("vk_deps/tinyexr/tinyexr.cc"),
-        .flags = &.{
-            "-O3",
-        },
     });
     exe.addCSourceFile(.{
         .file = b.path("vk_deps/tinyexr/miniz.c"),
-        .flags = &.{
-            "-O3",
-        },
     });
     exe.addCSourceFile(.{
         .file = b.path("vk_deps/cxx_vma/vma.cpp"),
-        .flags = &.{
-            "-O3",
-        },
     });
 
     // exe.root_module.addImport("zigimg", zigimg.module("zigimg"));

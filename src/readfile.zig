@@ -10,6 +10,7 @@ pub fn readfile_alloc(allocator: std.mem.Allocator, file: std.fs.File) ![]const 
 
     return contents;
 }
+
 //devilish
 pub fn readfile_allocZ(allocator: std.mem.Allocator, file: std.fs.File) ![:0]const u8 {
     const contents = try readfile_alloc(allocator, file);

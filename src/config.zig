@@ -5,64 +5,92 @@ pub const Transform = struct {
     rot: [3]f32,
     scale: [3]f32,
 };
-pub const Node = struct {
-    geometry: []const u8,
-    material: u32,
-    transform: Transform,
-};
+
 pub const Geometry = struct {
     name: []const u8,
     path: []const u8,
 };
 
-pub const ZonConfig = struct {
-    tile: [2]u32,
+pub const Settings = struct {
+    resolution: [2]u32,
+    render_tile: [2]u32,
+};
+
+const ConfigNode = struct {
+    geometry: []const u8,
+    material: u32,
+    transform: Transform,
+};
+
+const SerialScene = struct {
     geometry: []Geometry,
-    nodes: []Node,
+    nodes: []ConfigNode,
+};
+
+const SerialConfig = struct {
+    settings: Settings,
+    scene: SerialScene,
+};
+
+pub const Node = struct {
+    geometry: u32,
+    material: u32,
+    transform: Transform,
 };
 
 pub const Config = struct {
-    tile: [2]u32,
+    arena: *std.heap.ArenaAllocator,
+
+    settings: Settings,
     geometry: []Geometry,
     nodes: []Node,
 
     geometry_map: std.StringArrayHashMap(u32),
-    node_map: std.StringArrayHashMap(u32),
 
-    pub fn build(allocator: std.mem.Allocator, zon: ZonConfig) !Config {
-        var geometry_map = std.StringArrayHashMap(u32).init(allocator);
-        var node_map = std.StringArrayHashMap(u32).init(allocator);
-
-        for (zon.geometry, 0..) |geo, i| {
-            try geometry_map.put(geo.name, @intCast(i));
-        }
-
-        for (zon.nodes, 0..) |node, i| {
-            if (!geometry_map.contains(node.geometry)) return error.UnknownGeometry;
-            try node_map.put(node.geometry, @intCast(i));
-        }
-
-        return .{
-            .tile = zon.tile,
-            .geometry = zon.geometry,
-            .nodes = zon.nodes,
-            .geometry_map = geometry_map,
-            .node_map = node_map,
-        };
-    }
-
-    pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+    pub fn deinit(self: *Config) void {
         self.geometry_map.deinit();
-        self.node_map.deinit();
-        std.zon.parse.free(allocator, @as(ZonConfig, .{
-            .tile = self.tile,
-            .geometry = self.geometry,
-            .nodes = self.nodes,
-        }));
+        self.arena.deinit();
     }
 };
 
 pub fn parse(allocator: std.mem.Allocator, src: [:0]const u8) !Config {
-    const zon = try std.zon.parse.fromSlice(ZonConfig, allocator, src, null, .{ .free_on_error = true });
-    return Config.build(allocator, zon);
+    const arena = try allocator.create(std.heap.ArenaAllocator);
+    errdefer allocator.destroy(arena);
+
+    arena.* = std.heap.ArenaAllocator.init(allocator);
+    errdefer arena.deinit();
+
+    const alloc = arena.allocator();
+    const serial = try std.zon.parse.fromSlice(SerialConfig, alloc, src, null, .{});
+
+    return build(alloc, arena, serial);
+}
+
+fn build(alloc: std.mem.Allocator, arena: *std.heap.ArenaAllocator, serial: SerialConfig) !Config {
+    var geometry_map = std.StringArrayHashMap(u32).init(alloc);
+    errdefer geometry_map.deinit();
+
+    for (serial.scene.geometry, 0..) |geo, i| {
+        try geometry_map.put(geo.name, @intCast(i));
+    }
+
+    const nodes = try alloc.alloc(Node, serial.scene.nodes.len);
+
+    for (serial.scene.nodes, nodes) |cfg_node, *node| {
+        const geo_idx = geometry_map.get(cfg_node.geometry) orelse
+            return error.UnknownGeometry;
+        node.* = .{
+            .geometry = geo_idx,
+            .material = cfg_node.material,
+            .transform = cfg_node.transform,
+        };
+    }
+
+    return .{
+        .arena = arena,
+        .settings = serial.settings,
+        .geometry = serial.scene.geometry,
+        .nodes = nodes,
+        .geometry_map = geometry_map,
+    };
 }

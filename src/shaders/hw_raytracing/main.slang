@@ -8,6 +8,7 @@ import principled;
 import glass;
 import emission;
 
+// adaptive sampling: https://cs184.eecs.berkeley.edu/sp21/docs/proj3-1-part-5
 struct PC {
     struct Buffers {
         float3* verts;
@@ -139,12 +140,27 @@ float3 sample_phase_function(float3 wo, float g, inout uint seed) {
     return normalize(u * dir.x + v * dir.y + w * dir.z);
 }
 
+float convergence(float sigma, float n) {
+    return 1.96 * (sigma) / sqrt(n);
+}
+bool check_convergence(inout float s1, inout float s2, float xk, int n, float threshold) {
+    s1 += xk;
+    s2 += xk * xk;
+    if (n <= 10)
+        return false;
+    let mu = s1 / float(n);
+    let sigma2 = (1.0 / float(n - 1)) * (s2 - (s1 * s1) / float(n));
+    let I = convergence(sqrt(sigma2), float(n));
+    return I < threshold * mu;
+}
+
 [shader("raygeneration")]
 void raygen_entry() {
     // use specialization constants for these 2
     //  or at least I think I can use them here
-    static let SAMPLES_PER_PIXEL = 1;
+    static let SAMPLES_PER_PIXEL = 2;
     static let BOUNCES = 12;
+    static let NOISE_THRESHOLD = 0.01;
 
     let ray_origin = float3(0, 2.0, 9.0);
 
@@ -154,8 +170,12 @@ void raygen_entry() {
 
     var seed = screen.coords.x * 1973 + screen.coords.y * 9277 + pc.frame * 26699;
 
+    let prev = output[screen.coords.xy];
+
     var sample = uint(0);
     var sample_accumilator = float3(0);
+
+    var pixel_samples = 0;
     for (; sample < SAMPLES_PER_PIXEL; sample++) {
         let jitter = random::f2(seed);
         let uv = (float2(screen.coords.xy) + jitter - (pc.res.xy * 0.5)) / (pc.res.y);
@@ -186,12 +206,10 @@ void raygen_entry() {
             }
             payload.throughput /= p;
         }
-        let color = payload.color;
-        sample_accumilator += color;
+        pixel_samples += 1;
+        sample_accumilator += payload.color;
     }
-    let color = sample_accumilator / SAMPLES_PER_PIXEL;
-    let prev = output[screen.coords.xy];
-
+    let color = sample_accumilator / sample;
     let weight = 1.0 / float(pc.frame + 1);
     output[screen.coords.xy] = float4(lerp(prev.rgb, color, weight), 1.0);
     // output[screen.coords.xy] = float4(lerp(prev.rgb, color, 0.1), 1.0);
@@ -228,9 +246,9 @@ struct HitInfo {
 };
 
 void scatter(const uint material,
-            const HitInfo hit,
-            const Surface surface,
-            inout State state) {
+             const HitInfo hit,
+             const Surface surface,
+             inout State state) {
     let glass = Glass(float3(0.1, 0.9, 0.5), 2, 0.0, 0.01);
 
     let cloth_diffuse = Principled::diffuse_pararms(0);
@@ -241,13 +259,12 @@ void scatter(const uint material,
                            cloth_diffuse,
                            cloth_sheen);
 
-    let x = hit.pos.x;
     let is_floor = hit.pos.y < 0.001;
     let diffuse_dif = Principled::diffuse_pararms(0);
     let diffuse_specular = Principled::specular_params(1, 1);
     let diffuse_clearcoat = Principled::clearcoat_params(0, 0);
-    let diffuse = Principled(is_floor ? float3(0.8) : float3(0.8),
-                             is_floor ? 0.3 : 0.8,
+    let diffuse = Principled(float3(0.8),
+                             0.5,
                              is_floor ? 1.0 : 0.0,
                              diffuse_dif,
                              {},
@@ -256,21 +273,22 @@ void scatter(const uint material,
 
     let mirror_specular = Principled::specular_params(0, 0);
     let mirror = Principled(float3(0.8, 0.8, 0.8), 0.0, 1, {}, {}, mirror_specular, {});
+
     let default_mat = Principled(float3(0.8, 0.1, 0.4), 0.8, 0.0);
 
     state.hit = true;
     switch (material) {
-    case 0:
+    case 0: 
         return glass.scatter(surface, state);
-    case 1:
+    case 1: 
         return cloth.scatter(surface, state);
-    case 2:
+    case 2: 
         return mirror.scatter(surface, state);
-    case 3:
+    case 3: 
         return diffuse.scatter(surface, state);
-    default:
+    default: 
         return default_mat.scatter(surface, state);
-    }
+    };
 }
 
 [shader("closesthit")]

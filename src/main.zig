@@ -45,130 +45,167 @@ const PC = extern struct {
     materials: u64 = 0,
 };
 
-fn Handle(comptime T: type) type {
-    const Self = struct {
-        data: u32 = 0,
+// fn Handle(comptime T: type) type {
+//     const Self = struct {
+//         data: u32 = 0,
 
-        pub const Type = T;
-        pub const __Handle_mark = void;
+//         pub const Type = T;
+//         pub const __Handle_mark = void;
 
-        pub fn from_int(i: u32) @This() {
-            return .{ .data = i };
-        }
-    };
+//         pub fn from_int(i: u32) @This() {
+//             return .{ .data = i };
+//         }
+//     };
 
-    return Self;
-}
+//     return Self;
+// }
 
-fn is_Handle(comptime T: type) bool {
-    return @hasDecl(T, "__is_handle");
-}
+// fn is_Handle(comptime T: type) bool {
+//     return @hasDecl(T, "__is_handle");
+// }
 
-fn Allocator(comptime T: type) type {
-    const H = Handle(T);
+// fn Allocator(comptime T: type) type {
+//     const H = Handle(T);
 
-    const Self = struct {
-        const Self = @This();
-        pub const Handle = H;
+//     const Self = struct {
+//         const Self = @This();
+//         pub const Handle = H;
 
-        data: std.ArrayList(T),
-        free: std.ArrayList(u32),
+//         data: std.ArrayList(T),
+//         free: std.ArrayList(u32),
 
-        pub fn init_capacity(allocator: std.mem.Allocator, capacity: usize) Self {
-            return .{
-                .data = std.ArrayList(T).initCapacity(allocator, capacity),
-                .free = std.ArrayList(u32).initCapacity(allocator, capacity / 2),
-            };
-        }
-        pub fn init_from_buffers(allocator: std.mem.Allocator, list: std.ArrayList(T)) Self {
-            return .{
-                .data = list,
-                .free = std.ArrayList(u32).init(allocator, list.items.len / 2),
-            };
-        }
+//         pub fn init_capacity(allocator: std.mem.Allocator, capacity: usize) Self {
+//             return .{
+//                 .data = std.ArrayList(T).initCapacity(allocator, capacity),
+//                 .free = std.ArrayList(u32).initCapacity(allocator, capacity / 2),
+//             };
+//         }
+//         pub fn init_from_buffers(allocator: std.mem.Allocator, list: std.ArrayList(T)) Self {
+//             return .{
+//                 .data = list,
+//                 .free = std.ArrayList(u32).init(allocator, list.items.len / 2),
+//             };
+//         }
 
-        pub fn deinit(self: *Self) void {
-            self.data.deinit();
-            self.free.deinit();
-        }
+//         pub fn deinit(self: *Self) void {
+//             self.data.deinit();
+//             self.free.deinit();
+//         }
 
-        pub fn add(self: *Self, value: T) !H {
-            if (self.free.items.len > 0) {
-                const index = self.free.pop();
-                self.data.items[index] = value;
-                return .{ .index = index };
-            }
+//         pub fn add(self: *Self, value: T) !H {
+//             if (self.free.items.len > 0) {
+//                 const index = self.free.pop();
+//                 self.data.items[index] = value;
+//                 return .{ .index = index };
+//             }
 
-            const index: u32 = @intCast(self.data.items.len);
-            try self.data.append(value);
-            return .{ .index = index };
-        }
+//             const index: u32 = @intCast(self.data.items.len);
+//             try self.data.append(value);
+//             return .{ .index = index };
+//         }
 
-        pub fn remove(self: *Self, handle: H) !void {
-            const index = handle.index;
-            if (index >= self.data.items.len) return error.InvalidIndex;
+//         pub fn remove(self: *Self, handle: H) !void {
+//             const index = handle.index;
+//             if (index >= self.data.items.len) return error.InvalidIndex;
 
-            try self.free.append(index);
-            self.data.items[index] = undefined;
-        }
+//             try self.free.append(index);
+//             self.data.items[index] = undefined;
+//         }
 
-        pub fn get_val(self: *Self, handle: H) T {
-            return self.data.items[handle.index];
-        }
+//         pub fn get_val(self: *Self, handle: H) T {
+//             return self.data.items[handle.index];
+//         }
 
-        pub fn get_ptr(self: *Self, handle: H) *T {
-            return &self.data.items[handle.index];
-        }
-    };
+//         pub fn get_ptr(self: *Self, handle: H) *T {
+//             return &self.data.items[handle.index];
+//         }
+//     };
 
-    return Self;
-}
-
-const Transform = struct {
-    pos: emma.mth.vec4,
-    rot: emma.mth.quat4,
-    scale: emma.mth.vec4,
-};
-
-const Node = struct {
-    geometry_handle: u32, // index on a slice
-    material_id: u32, // id for the shader
-    transform: Transform,
-};
-
-const Asset = struct {
-    nodes: []u32,
-};
+//     return Self;
+// }
 
 const Resources = struct {
     local: []emma.local_geometry.geometry,
     device: []emma.device_geometry,
 };
 
+const ThreadContext = struct {
+    allocator: std.mem.Allocator,
+    path: []const u8,
+    result: ?emma.local_geometry.geometry = null,
+    err: ?anyerror = null,
+    duration_ns: u64 = 0,
+};
+
+fn load_geometry_thread(ctx: *ThreadContext) void {
+    var timer = std.time.Timer.start() catch {
+        ctx.err = error.TimerUnsupported;
+        return;
+    };
+    ctx.result = load_geometry(ctx.allocator, ctx.path) catch |e| {
+        ctx.err = e;
+        return;
+    };
+    ctx.duration_ns = timer.lap();
+}
+
+fn load_geometry(allocator: std.mem.Allocator, filepath: []const u8) !emma.local_geometry.geometry {
+    const file = try std.fs.cwd().openFile(filepath, .{});
+    defer file.close();
+
+    const d = try emma.readfile_alloc(allocator, file);
+    defer allocator.free(d);
+
+    var obj_model = try emma.obj.parseObj(allocator, d);
+    defer obj_model.deinit(allocator);
+
+    return emma.local_geometry.geometry.from_obj(allocator, &obj_model);
+}
+
 fn build_local_geometry(
     allocator: std.mem.Allocator,
     list: []const config.Geometry,
 ) ![]emma.local_geometry.geometry {
-    var local_geometries = try std.ArrayList(emma.local_geometry.geometry).initCapacity(allocator, list.len);
-    for (list) |path| {
-        const filepath = path.path;
-        var timer = try std.time.Timer.start();
-        const obj_model = blk0: {
-            const file = try std.fs.cwd().openFile(filepath, .{});
-            const d = try emma.readfile_alloc(allocator, file);
+    var total_timer = try std.time.Timer.start();
 
-            defer file.close();
-            defer allocator.free(d);
+    const local_geometries = try allocator.alloc(emma.local_geometry.geometry, list.len);
+    errdefer allocator.free(local_geometries);
 
-            const m1 = try emma.obj.parseObj(allocator, d);
-            std.debug.print("loaded {s} in {d:.2}ms\n", .{ filepath, emma.ns_to_ms(timer.lap()) });
-            break :blk0 m1;
-        };
-        try local_geometries.append(allocator, try emma.local_geometry.geometry.from_obj(allocator, &obj_model));
+    const contexts = try allocator.alloc(ThreadContext, list.len);
+    defer allocator.free(contexts);
+
+    const threads = try allocator.alloc(std.Thread, list.len);
+    defer allocator.free(threads);
+
+    for (list, contexts) |geo, *ctx| {
+        ctx.* = .{ .allocator = allocator, .path = geo.path };
     }
-    return local_geometries.items;
-}
 
+    for (contexts, threads) |*ctx, *thread| {
+        thread.* = try std.Thread.spawn(.{}, load_geometry_thread, .{ctx});
+    }
+
+    for (threads) |thread| {
+        thread.join();
+    }
+
+    for (contexts, local_geometries, 0..) |ctx, *geo, i| {
+        if (ctx.err) |e| return e;
+        geo.* = ctx.result.?;
+        std.debug.print("geometry:{d} {s}: {d:.3}ms\n", .{
+            i,
+            list[i].name,
+            @as(f64, @floatFromInt(ctx.duration_ns)) / std.time.ns_per_ms,
+        });
+    }
+
+    const total_ns = total_timer.read();
+    std.debug.print("geometry total wall time: {d:.3}ms\n", .{
+        @as(f64, @floatFromInt(total_ns)) / std.time.ns_per_ms,
+    });
+
+    return local_geometries;
+}
 fn build_device_geometry(
     allocator: std.mem.Allocator,
     u: *emma.vlk_unit,
@@ -218,7 +255,7 @@ pub fn main() !void {
 
         break :blk result;
     };
-    defer conf.deinit(allocator);
+    defer conf.deinit();
 
     const width: usize = 1440;
     const height: usize = 1440;
@@ -275,8 +312,7 @@ pub fn main() !void {
             {
                 {
                     {
-                        const geometry_name = node.geometry;
-                        const geometry_handle: u32 = conf.geometry_map.get(geometry_name) orelse return error.UnknownGeometry;
+                        const geometry_handle: u32 = node.geometry;
                         const geometry = emma.raytracing_geometry_data.init(device_geometry_storage, geometry_handle, &u.device);
                         try blas_geometry_storage.append(allocator, geometry);
                     }
@@ -532,8 +568,8 @@ pub fn main() !void {
         defer descriptor_pool.deinit(u.device.logical_device);
 
         //create texture
-        const render_texture_width = 1440;
-        const render_texture_height = 1440;
+        const render_texture_width = conf.settings.resolution[0];
+        const render_texture_height = conf.settings.resolution[1];
 
         const render_texture = try emma.vlk_image.init(
             &u.vma,
@@ -557,6 +593,7 @@ pub fn main() !void {
         );
         {
             try is.begin();
+
             render_texture.cmd_transition(
                 is.cmd,
                 .{ .top_of_pipe_bit = true },
@@ -567,6 +604,7 @@ pub fn main() !void {
                 .general,
                 null,
             );
+
             is.cmd.clearColorImage(
                 render_texture.handle,
                 .general,
@@ -574,6 +612,25 @@ pub fn main() !void {
                 1,
                 @ptrCast(&render_texture.full_subresource_range()),
             );
+
+            const clear_barrier = vk.ImageMemoryBarrier2{
+                .src_stage_mask = .{ .clear_bit = true },
+                .src_access_mask = .{ .transfer_write_bit = true },
+                .dst_stage_mask = .{ .ray_tracing_shader_bit_khr = true },
+                .dst_access_mask = .{ .shader_write_bit = true, .shader_read_bit = true },
+                .old_layout = .general,
+                .new_layout = .general,
+                .src_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
+                .dst_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
+                .image = render_texture.handle,
+                .subresource_range = render_texture.full_subresource_range(),
+            };
+
+            is.cmd.pipelineBarrier2(&.{
+                .image_memory_barrier_count = 1,
+                .p_image_memory_barriers = @ptrCast(&clear_barrier),
+            });
+
             try is.submit_and_wait(u.device.queue, u.device.logical_device);
         }
         defer render_texture.deinit(&u.vma, &u.device);
@@ -678,7 +735,7 @@ pub fn main() !void {
             var flush_render_texture: bool = true;
             var accumilation_frame_counter: u32 = 0;
 
-            const tile_pixel_strides = conf.tile;
+            const tile_pixel_strides = conf.settings.render_tile;
             var tiles = [2]emma.TileElm{
                 emma.TileElm.init(tile_pixel_strides[0], render_texture_width),
                 emma.TileElm.init(tile_pixel_strides[1], render_texture_height),
