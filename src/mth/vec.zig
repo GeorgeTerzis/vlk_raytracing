@@ -60,3 +60,11 @@ pub fn cross(lhs: v4f32, rhs: v4f32) v4f32 {
     const c = lhs * rhs_yzx - lhs_yzx * rhs;
     return @shuffle(f32, c, undefined, [4]i32{ 1, 2, 0, 3 });
 }
+
+pub fn from_arr3(arr: [3]f32, w: f32) v4f32 {
+    return .{ arr[0], arr[1], arr[2], w };
+}
+
+pub fn to_arr3(v: v4f32) [3]f32 {
+    return .{ v[0], v[1], v[2] };
+}

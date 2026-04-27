@@ -5,6 +5,10 @@ const c_libs = @import("c_libs.zig");
 pub const c_vma = c_libs.c_vma;
 pub const tinyexr = c_libs.tinyexr;
 
+pub const read = @import("readfile.zig");
+pub const readfile_alloc = read.readfile_alloc;
+pub const readfile_allocZ = read.readfile_allocZ;
+
 pub const obj = @import("obj");
 pub const sdl = @import("sdl3");
 pub const vk = @import("vulkan");
@@ -2368,17 +2372,6 @@ pub fn write_exr_rgba(
         tinyexr.FreeEXRErrorMessage(err);
         return error.EXRWriteFailed;
     }
-}
-
-pub fn readfile_alloc(allocator: std.mem.Allocator, file: std.fs.File) ![]const u8 {
-    var file_buffer: [1024]u8 = undefined;
-    var reader = file.reader(&file_buffer);
-
-    const stat = try file.stat();
-    const size = stat.size;
-    const contents = try reader.interface.readAlloc(allocator, size);
-
-    return contents;
 }
 
 fn vlk_staging_buffer(vma: *vlk_vma, size: vk.DeviceSize, readback: bool) !vlk_vma_buffer {

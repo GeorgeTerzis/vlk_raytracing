@@ -141,12 +141,10 @@ float3 sample_phase_function(float3 wo, float g, inout uint seed) {
 
 [shader("raygeneration")]
 void raygen_entry() {
-
     // use specialization constants for these 2
     //  or at least I think I can use them here
-
-    static let SAMPLES_PER_PIXEL = 2;
-    static let BOUNCES = 30;
+    static let SAMPLES_PER_PIXEL = 1;
+    static let BOUNCES = 12;
 
     let ray_origin = float3(0, 2.0, 9.0);
 
@@ -266,13 +264,10 @@ void scatter(const uint material,
         return glass.scatter(surface, state);
     case 1:
         return cloth.scatter(surface, state);
-
     case 2:
         return mirror.scatter(surface, state);
-
     case 3:
         return diffuse.scatter(surface, state);
-
     default:
         return default_mat.scatter(surface, state);
     }

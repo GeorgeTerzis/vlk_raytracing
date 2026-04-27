@@ -1,0 +1,84 @@
+.{
+    .geometry = .{
+        .{
+            .name = "dragon",
+            .path = "./src/models/scene/dragon.obj",
+        },
+        .{
+            .name = "curtains",
+            .path = "./src/models/scene/curtains.obj",
+        },
+        .{
+            .name = "building",
+            .path = "./src/models/scene/building.obj",
+        },
+        .{
+            .name = "sphere",
+            .path = "./src/models/scene/sphere.obj",
+        },
+        .{
+            .name = "light",
+            .path = "./src/models/scene/light.obj",
+        },
+        .{
+            .name = "monolith",
+            .path = "./src/models/scene/monolith.obj",
+        },
+    },
+    .nodes = .{
+        .{
+            .geometry = "dragon",
+            .material = 0,
+            .transform = .{
+                .pos = .{ 0.0, 0.0, 0.0 },
+                .rot = .{ 0.0, 0.0, 0.0 },
+                .scale = .{ 1.0, 1.0, 1.0 },
+            },
+        },
+        .{
+            .geometry = "curtains",
+            .material = 1,
+            .transform = .{
+                .pos = .{ 0.0, 0.0, 0.0 },
+                .rot = .{ 0.0, 0.0, 0.0 },
+                .scale = .{ 1.0, 1.0, 1.0 },
+            },
+        },
+        .{
+            .geometry = "building",
+            .material = 3,
+            .transform = .{
+                .pos = .{ 0.0, 0.0, 0.0 },
+                .rot = .{ 0.0, 0.0, 0.0 },
+                .scale = .{ 1.0, 1.0, 1.0 },
+            },
+        },
+        .{
+            .geometry = "sphere",
+            .material = 2,
+            .transform = .{
+                .pos = .{ 0.0, 0.0, 0.0 },
+                .rot = .{ 0.0, 0.0, 0.0 },
+                .scale = .{ 1.0, 1.0, 1.0 },
+            },
+        },
+        .{
+            .geometry = "light",
+            .material = 0,
+            .transform = .{
+                .pos = .{ 0.0, 0.0, 0.0 },
+                .rot = .{ 0.0, 0.0, 0.0 },
+                .scale = .{ 1.0, 1.0, 1.0 },
+            },
+        },
+        .{
+            .geometry = "monolith",
+            .material = 2,
+            .transform = .{
+                .pos = .{ 0.0, 0.0, 0.0 },
+                .rot = .{ 0.0, 0.0, 0.0 },
+                .scale = .{ 1.0, 1.0, 1.0 },
+            },
+        },
+    },
+}

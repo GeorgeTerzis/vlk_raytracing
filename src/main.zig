@@ -1,26 +1,17 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const emma = @import("emma");
+const config = @import("config.zig");
 
 const sdl = emma.sdl;
 const vk = emma.vk;
 const vma = emma.c_vma;
 
-// const LocalMeshes = struct {};
-// const DeviceMeshes = struct {};
-// const Mesh = struct {
-//     geometry: []u32,
-//     mat: u32,
-
-//     pos: [3]f32,
-//     rot: [4]f32,
-//     scale: [3]f32,
-// };
-
 const MousePos = extern struct {
     x: f32,
     y: f32,
 };
+
 const PC = extern struct {
     const Buffers = struct {
         verts: u64,
@@ -54,15 +45,6 @@ const PC = extern struct {
     materials: u64 = 0,
 };
 
-const geometry_list = [_][:0]const u8{
-    "./src/models/scene/dragon.obj",
-    "./src/models/scene/curtains.obj",
-    "./src/models/scene/building.obj",
-    "./src/models/scene/sphere.obj",
-    "./src/models/scene/light.obj",
-    "./src/models/scene/monolith.obj",
-};
-
 fn Handle(comptime T: type) type {
     const Self = struct {
         data: u32 = 0,
@@ -77,6 +59,7 @@ fn Handle(comptime T: type) type {
 
     return Self;
 }
+
 fn is_Handle(comptime T: type) bool {
     return @hasDecl(T, "__is_handle");
 }
@@ -164,14 +147,19 @@ const Resources = struct {
 
 fn build_local_geometry(
     allocator: std.mem.Allocator,
-    list: []const [:0]const u8,
+    list: []const config.Geometry,
 ) ![]emma.local_geometry.geometry {
     var local_geometries = try std.ArrayList(emma.local_geometry.geometry).initCapacity(allocator, list.len);
-    for (list) |filepath| {
+    for (list) |path| {
+        const filepath = path.path;
         var timer = try std.time.Timer.start();
         const obj_model = blk0: {
             const file = try std.fs.cwd().openFile(filepath, .{});
             const d = try emma.readfile_alloc(allocator, file);
+
+            defer file.close();
+            defer allocator.free(d);
+
             const m1 = try emma.obj.parseObj(allocator, d);
             std.debug.print("loaded {s} in {d:.2}ms\n", .{ filepath, emma.ns_to_ms(timer.lap()) });
             break :blk0 m1;
@@ -221,6 +209,17 @@ pub fn main() !void {
     const allocator: std.mem.Allocator = std.heap.c_allocator;
     var key_state = std.mem.zeroes([sdl.c.SDL_SCANCODE_COUNT]bool);
 
+    var conf = blk: {
+        const file = try std.fs.cwd().openFile("./scene.zon", .{});
+        defer file.close();
+
+        const src = try emma.readfile_allocZ(allocator, file);
+        const result = try config.parse(allocator, src);
+
+        break :blk result;
+    };
+    defer conf.deinit(allocator);
+
     const width: usize = 1440;
     const height: usize = 1440;
 
@@ -242,7 +241,7 @@ pub fn main() !void {
         command_buffers.buffers[0],
     );
 
-    const local_geometry_storage = try build_local_geometry(allocator, &geometry_list);
+    const local_geometry_storage = try build_local_geometry(allocator, conf.geometry);
     const device_geometry_storage = try build_device_geometry(allocator, &u, local_geometry_storage, is);
 
     const re = Resources{
@@ -260,70 +259,6 @@ pub fn main() !void {
         allocator.free(device_geometry_storage);
     }
 
-    const dragon_node = Node{
-        .geometry_handle = 0,
-        .material_id = 0,
-        .transform = .{
-            .pos = emma.mth.vec.fzero(),
-            .rot = emma.mth.vec.fzero(),
-            .scale = .{ 1, 1, 1, 1 },
-        },
-    };
-    const curtain_node = Node{
-        .geometry_handle = 1,
-        .material_id = 1,
-        .transform = .{
-            .pos = emma.mth.vec.fzero(),
-            .rot = emma.mth.vec.fzero(),
-            .scale = emma.mth.vec.fone(),
-        },
-    };
-    const building_node = Node{
-        .geometry_handle = 2,
-        .material_id = 3,
-        .transform = .{
-            .pos = emma.mth.vec.fzero(),
-            .rot = emma.mth.vec.fzero(),
-            .scale = emma.mth.vec.fone(),
-        },
-    };
-    const sphere_node = Node{
-        .geometry_handle = 3,
-        .material_id = 2,
-        .transform = .{
-            .pos = .{ 0, 0, 0, 0 },
-            .rot = emma.mth.vec.fzero(),
-            .scale = .{ 1, 1, 1, 1 },
-        },
-    };
-    const light_node = Node{
-        .geometry_handle = 4,
-        .material_id = 0,
-        .transform = .{
-            .pos = .{ 0, 0, 0, 0 },
-            .rot = emma.mth.vec.fzero(),
-            .scale = emma.mth.vec.fone(),
-        },
-    };
-    const monolith_node = Node{
-        .geometry_handle = 5,
-        .material_id = 2,
-        .transform = .{
-            .pos = emma.mth.vec.fzero(),
-            .rot = emma.mth.vec.fzero(),
-            .scale = emma.mth.vec.fone(),
-        },
-    };
-
-    const nodes = [_]Node{
-        dragon_node,
-        curtain_node,
-        building_node,
-        sphere_node,
-        light_node,
-        monolith_node,
-    };
-
     var blas_geometry_storage = std.MultiArrayList(emma.raytracing_geometry_data){};
     try blas_geometry_storage.ensureTotalCapacity(allocator, 5);
     var materials_storage = try std.ArrayList(u32).initCapacity(allocator, 5);
@@ -333,26 +268,33 @@ pub fn main() !void {
     var blas_ranges = try std.ArrayList(emma.blas_geometry_range).initCapacity(allocator, 5);
     var materials = try std.ArrayList(u32).initCapacity(allocator, 5);
     var instance_transforms = try std.ArrayList(vk.TransformMatrixKHR).initCapacity(allocator, 5);
-    for (nodes) |node| {
+    for (conf.nodes) |node| {
         const begin = blas_geometry_storage.len;
         {
             const len = 1;
             {
                 {
                     {
-                        const geometry = emma.raytracing_geometry_data.init(device_geometry_storage, @intCast(node.geometry_handle), &u.device);
+                        const geometry_name = node.geometry;
+                        const geometry_handle: u32 = conf.geometry_map.get(geometry_name) orelse return error.UnknownGeometry;
+                        const geometry = emma.raytracing_geometry_data.init(device_geometry_storage, geometry_handle, &u.device);
                         try blas_geometry_storage.append(allocator, geometry);
                     }
                     {
-                        const pos = node.transform.pos;
-                        const rot = node.transform.rot;
-                        const scale = node.transform.scale;
+                        const pos = emma.mth.vec.from_arr3(node.transform.pos, 0);
+                        //for now we will skip the rotation
+                        // it needs to be converted to quat
+                        // which needs to be it's own type
+                        // const rot = node.transform.rot;
+                        const rot = emma.mth.vec.fzero();
+                        const scale = emma.mth.vec.from_arr3(node.transform.scale, 1);
+
                         const mat = emma.mth.model(pos, rot, scale);
                         const vk_trans = emma.mth_to_vk_transform_matrix(mat);
                         try instance_transforms.append(allocator, vk_trans);
                     }
                     {
-                        const material = node.material_id;
+                        const material = node.material;
                         try materials_storage.append(allocator, material);
                         try materials.append(allocator, material);
                     }
@@ -529,6 +471,7 @@ pub fn main() !void {
     defer tlas.deinit(&u.vma, &u.device);
 
     const rt_props = emma.vlk_get_raytracing_properties(&u.vki, &u.device);
+
     const file = try std.fs.cwd().openFile("./src/shaders/hw_raytracing/shader.spv", .{});
     defer file.close();
 
@@ -735,7 +678,7 @@ pub fn main() !void {
             var flush_render_texture: bool = true;
             var accumilation_frame_counter: u32 = 0;
 
-            const tile_pixel_strides = [2]u32{ 256, 256 };
+            const tile_pixel_strides = [2]u32{ 500, 500 };
             var tiles = [2]emma.TileElm{
                 emma.TileElm.init(tile_pixel_strides[0], render_texture_width),
                 emma.TileElm.init(tile_pixel_strides[1], render_texture_height),
