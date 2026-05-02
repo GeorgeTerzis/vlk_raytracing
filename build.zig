@@ -65,15 +65,13 @@ pub fn build(b: *std.Build) void {
     exe.addCSourceFile(.{
         .file = b.path("vk_deps/cxx_vma/vma.cpp"),
     });
+    exe.linkLibCpp();
 
     // exe.root_module.addImport("zigimg", zigimg.module("zigimg"));
     exe.root_module.addImport("emma", emma);
-    exe.linkLibCpp();
-    // exe.linkSystemLibrary("vma");
     exe.linkSystemLibrary("vulkan");
     exe.linkSystemLibrary("sdl3");
     exe.linkSystemLibrary("z");
-    // exe.addLibraryPath(b.path("vk_deps/cxx_vma"));
 
     emma.addImport("mth", mth);
     emma.addImport("obj", obj_mod);

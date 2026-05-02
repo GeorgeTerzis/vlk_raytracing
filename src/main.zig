@@ -164,7 +164,7 @@ fn load_geometry(allocator: std.mem.Allocator, filepath: []const u8) !emma.local
 
 fn build_local_geometry(
     allocator: std.mem.Allocator,
-    list: []const config.Geometry,
+    list: []const config.Primitive,
 ) ![]emma.local_geometry.geometry {
     var total_timer = try std.time.Timer.start();
 
@@ -237,9 +237,6 @@ fn build_device_geometry(
 }
 
 pub fn main() !void {
-    // const resource_manager = Resources{};
-    // _ = resource_manager;
-
     try emma.sdl_init();
     defer emma.sdl_deinit();
 
@@ -278,14 +275,8 @@ pub fn main() !void {
         command_buffers.buffers[0],
     );
 
-    const local_geometry_storage = try build_local_geometry(allocator, conf.geometry);
+    const local_geometry_storage = try build_local_geometry(allocator, conf.primitive);
     const device_geometry_storage = try build_device_geometry(allocator, &u, local_geometry_storage, is);
-
-    const re = Resources{
-        .local = local_geometry_storage,
-        .device = device_geometry_storage,
-    };
-    _ = re;
 
     defer is.deinit(&u.device);
     defer allocator.free(local_geometry_storage);
@@ -302,17 +293,17 @@ pub fn main() !void {
 
     defer materials_storage.deinit(allocator);
 
-    var blas_ranges = try std.ArrayList(emma.blas_geometry_range).initCapacity(allocator, 5);
-    var materials = try std.ArrayList(u32).initCapacity(allocator, 5);
-    var instance_transforms = try std.ArrayList(vk.TransformMatrixKHR).initCapacity(allocator, 5);
-    for (conf.nodes) |node| {
+    var blas_ranges = try std.ArrayList(emma.blas_geometry_range).initCapacity(allocator, conf.assets.len);
+    var materials = try std.ArrayList(u32).initCapacity(allocator, conf.assets.len);
+    var instance_transforms = try std.ArrayList(vk.TransformMatrixKHR).initCapacity(allocator, conf.assets.len);
+    for (conf.assets) |node| {
         const begin = blas_geometry_storage.len;
         {
             const len = 1;
             {
                 {
                     {
-                        const geometry_handle: u32 = node.geometry;
+                        const geometry_handle: u32 = node.primitive;
                         const geometry = emma.raytracing_geometry_data.init(device_geometry_storage, geometry_handle, &u.device);
                         try blas_geometry_storage.append(allocator, geometry);
                     }
@@ -322,10 +313,12 @@ pub fn main() !void {
                         // it needs to be converted to quat
                         // which needs to be it's own type
                         // const rot = node.transform.rot;
-                        const rot = emma.mth.vec.fzero();
+                        const angles = node.transform.rot;
+                        _ = angles;
+                        const quat = emma.mth.vec.fzero();
                         const scale = emma.mth.vec.from_arr3(node.transform.scale, 1);
 
-                        const mat = emma.mth.model(pos, rot, scale);
+                        const mat = emma.mth.model(pos, quat, scale);
                         const vk_trans = emma.mth_to_vk_transform_matrix(mat);
                         try instance_transforms.append(allocator, vk_trans);
                     }
@@ -597,9 +590,9 @@ pub fn main() !void {
             render_texture.cmd_transition(
                 is.cmd,
                 .{ .top_of_pipe_bit = true },
-                .{ .top_of_pipe_bit = true },
+                .{ .clear_bit = true },
                 .{},
-                .{},
+                .{ .transfer_write_bit = true },
                 .undefined,
                 .general,
                 null,
@@ -617,7 +610,10 @@ pub fn main() !void {
                 .src_stage_mask = .{ .clear_bit = true },
                 .src_access_mask = .{ .transfer_write_bit = true },
                 .dst_stage_mask = .{ .ray_tracing_shader_bit_khr = true },
-                .dst_access_mask = .{ .shader_write_bit = true, .shader_read_bit = true },
+                .dst_access_mask = .{
+                    .shader_write_bit = true,
+                    .shader_read_bit = true,
+                },
                 .old_layout = .general,
                 .new_layout = .general,
                 .src_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
@@ -799,7 +795,10 @@ pub fn main() !void {
                             .src_stage_mask = .{ .clear_bit = true },
                             .src_access_mask = .{ .transfer_write_bit = true },
                             .dst_stage_mask = .{ .ray_tracing_shader_bit_khr = true },
-                            .dst_access_mask = .{ .shader_write_bit = true, .shader_read_bit = true },
+                            .dst_access_mask = .{
+                                .shader_write_bit = true,
+                                .shader_read_bit = true,
+                            },
                             .old_layout = .general,
                             .new_layout = .general,
                             .src_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
@@ -856,9 +855,11 @@ pub fn main() !void {
                         );
 
                         {
-                            tiles[0] = emma.next_tile(tiles[0].pos, tile_pixel_strides[0], render_texture_width);
+                            // std.debug.print("{any}\n-----\n", .{tiles[0]});
+                            // std.debug.print("{any}\n\n", .{tiles[1]});
+                            tiles[0] = tiles[0].next(tile_pixel_strides[0], render_texture_width);
                             if (tiles[0].pos == 0)
-                                tiles[1] = emma.next_tile(tiles[1].pos, tile_pixel_strides[1], render_texture_height);
+                                tiles[1] = tiles[1].next(tile_pixel_strides[1], render_texture_height);
                         }
                     } else {
                         // quit = true;
@@ -1018,11 +1019,7 @@ pub fn main() !void {
                 }
                 frames.advance();
 
-                if (accumilation_frame_counter > 5000) {
-                    done = true;
-                } else {
-                    done = false;
-                }
+                done = (accumilation_frame_counter > 1024);
             }
 
             {

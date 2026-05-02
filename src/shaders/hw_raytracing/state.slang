@@ -9,5 +9,6 @@ public struct State{
     public uint seed;
     public bool hit;
 
+    public bool inside_medium = false;
     public float medium_t = 0.0;
 };

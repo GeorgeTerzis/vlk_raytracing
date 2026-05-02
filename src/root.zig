@@ -30,17 +30,13 @@ pub fn to_ptr(comptime T: type, in: anytype) T {
     return @ptrFromInt(@intFromEnum(in));
 }
 
-const validation_layers: []const [*:0]const u8 = &.{
-    "VK_LAYER_KHRONOS_validation",
-};
-
 const required_device_extensions: []const [*:0]const u8 = &.{
     vk.extensions.khr_swapchain.name,
     vk.extensions.khr_ray_tracing_pipeline.name,
     vk.extensions.khr_acceleration_structure.name,
     vk.extensions.khr_deferred_host_operations.name,
-    vk.extensions.ext_mesh_shader.name,
-    vk.extensions.khr_compute_shader_derivatives.name,
+        // vk.extensions.ext_mesh_shader.name,
+        // vk.extensions.khr_compute_shader_derivatives.name,
 };
 const required_features = .{
     vk.PhysicalDeviceAccelerationStructureFeaturesKHR{
@@ -49,16 +45,16 @@ const required_features = .{
     vk.PhysicalDeviceRayTracingPipelineFeaturesKHR{
         .ray_tracing_pipeline = vk.Bool32.true,
     },
-    vk.PhysicalDeviceComputeShaderDerivativesFeaturesKHR{
-        .compute_derivative_group_quads = vk.Bool32.true,
-        .compute_derivative_group_linear = vk.Bool32.true,
-    },
+    // vk.PhysicalDeviceComputeShaderDerivativesFeaturesKHR{
+    //     .compute_derivative_group_quads = vk.Bool32.true,
+    //     .compute_derivative_group_linear = vk.Bool32.true,
+    // },
     vk.PhysicalDeviceBufferDeviceAddressFeatures{
         .buffer_device_address = vk.Bool32.true,
     },
-    vk.PhysicalDeviceDynamicRenderingFeatures{
-        .dynamic_rendering = vk.Bool32.true,
-    },
+    // vk.PhysicalDeviceDynamicRenderingFeatures{
+    //     .dynamic_rendering = vk.Bool32.true,
+    // },
     vk.PhysicalDeviceSynchronization2Features{
         .synchronization_2 = vk.Bool32.true,
     },
@@ -150,20 +146,35 @@ pub const vlk_instance = struct {
         };
 
         const extensions = try sdl.vulkan.getInstanceExtensions();
+        const enable_validation = false;
+        const validation_feature_enables = [_]vk.ValidationFeatureEnableEXT{
+            .best_practices_ext,
+            .synchronization_validation_ext,
+            .gpu_assisted_ext,
+            .gpu_assisted_reserve_binding_slot_ext,
+        };
+        const validation_features = vk.ValidationFeaturesEXT{
+            .enabled_validation_feature_count = validation_feature_enables.len,
+            .p_enabled_validation_features = &validation_feature_enables,
+            .disabled_validation_feature_count = 0,
+            .p_disabled_validation_features = null,
+        };
+
+        const layers = if (enable_validation)
+            &[_][*:0]const u8{"VK_LAYER_KHRONOS_validation"}
+        else
+            &[_][*:0]const u8{};
         // if (builtin.mode == .Debug) try vki_check_validation_layer_support(allocator, vkb);
         const create_info: vk.InstanceCreateInfo = .{
             .p_application_info = &app_info,
+
             .enabled_extension_count = @intCast(extensions.len),
             .pp_enabled_extension_names = extensions.ptr,
 
-            .enabled_layer_count = count: switch (builtin.mode) {
-                .Debug => break :count @intCast(validation_layers.len),
-                else => break :count 0,
-            },
-            .pp_enabled_layer_names = layers: switch (builtin.mode) {
-                .Debug => break :layers validation_layers.ptr,
-                else => break :layers null,
-            },
+            .enabled_layer_count = @intCast(layers.len),
+            .pp_enabled_layer_names = layers.ptr,
+
+            .p_next = &validation_features,
         };
 
         const instance = try vkb.createInstance(&create_info, null);
@@ -609,9 +620,9 @@ pub const vlk_swapchain = struct {
 
             const present_modes = try vki.instance.getPhysicalDeviceSurfacePresentModesAllocKHR(device.physical_device, window.surface_khr(), allocator);
             defer allocator.free(present_modes);
-            var chosen_present_mode = vk.PresentModeKHR.immediate_khr;
+            var chosen_present_mode = vk.PresentModeKHR.fifo_khr;
             for (present_modes) |pm| {
-                if (pm == .shared_continuous_refresh_khr) {
+                if (pm == .immediate_khr) {
                     chosen_present_mode = pm;
                     break;
                 }
@@ -2338,7 +2349,12 @@ pub fn write_exr_rgba(
     image.width = @intCast(width);
     image.height = @intCast(height);
 
-    var image_ptr = [4][*]f32{ a.ptr, b.ptr, g.ptr, r.ptr };
+    var image_ptr = [4][*]f32{
+        a.ptr,
+        b.ptr,
+        g.ptr,
+        r.ptr,
+    };
     image.images = @ptrCast(&image_ptr);
 
     header.num_channels = 4;
@@ -2512,37 +2528,24 @@ pub const vlk_fence_pool = struct {
 
 pub const TileElm = struct {
     pos: u32,
-    stride: u32,
     len: u32,
 
     pub fn init(desired_stride: u32, max: u32) TileElm {
         return .{
             .pos = 0,
-            .stride = desired_stride,
             .len = @min(desired_stride, max),
         };
     }
-};
 
-pub fn next_tile(t: u32, desired_stride: u32, max: u32) TileElm {
-    const stride: u32 = blk: {
-        const diff = @as(i32, @intCast(max)) - @as(i32, @intCast(t));
-        if (diff > 0) {
-            break :blk @min(@as(u32, @intCast(diff)), desired_stride);
-        } else {
-            return .{ .pos = 0, .stride = desired_stride, .len = desired_stride };
-        }
-    };
-    const pos = t + stride;
-    const len: u32 = blk: {
-        const next_pos = pos + desired_stride;
-        if (next_pos > max) {
-            break :blk max - pos;
-        }
-        break :blk desired_stride;
-    };
-    return .{ .pos = pos, .stride = stride, .len = len };
-}
+    pub fn next(self: @This(), desired_stride: u32, max: u32) TileElm {
+        const pos = self.pos + self.len;
+        if (pos >= max) return init(desired_stride, max);
+        return .{
+            .pos = pos,
+            .len = @min(desired_stride, max - pos),
+        };
+    }
+};
 
 pub fn set_create_info(set: []const vk.DescriptorSetLayoutBinding) vk.DescriptorSetLayoutCreateInfo {
     return .{

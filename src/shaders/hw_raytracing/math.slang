@@ -27,6 +27,16 @@ float2 random_in_unit_disk(inout uint seed) {
         radius * sin(theta)
     );
 }
+public float3 random_in_unit_sphere(inout uint seed) {
+    let theta = 2.0 * PI * random::unit(seed);
+    let phi   = acos(1.0 - 2.0 * random::unit(seed));
+    let r     = pow(random::unit(seed), 1.0 / 3.0);   
+    return float3(
+        r * sin(phi) * cos(theta),
+        r * sin(phi) * sin(theta),
+        r * cos(phi)
+    );
+}
 
 public float3 bias_vector(float3 vec, float3 vec_origin, float3 bias_point, float k) {
     float3 target_dir = normalize(bias_point - vec_origin);

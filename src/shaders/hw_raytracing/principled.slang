@@ -1,5 +1,6 @@
 module principled;
 
+import lobe;
 import surface;
 import math;
 import rand;
@@ -103,6 +104,138 @@ public struct VNDF {
     }
 };
 
+struct DiffuseLobe : Lobe {
+    float3 color;
+    float roughness;
+    float subsurface = 0;
+
+    float sheen_tint = 0;
+    float sheen_weight = 0;
+
+    struct Sheen {
+        static float3 Ctint(float3 color) {
+            let lum = luminance(color);
+            return (lum > 0) ? (color / lum) : 1;
+        }
+        static float3 Csheen(float3 color, float3 tint) {
+            return (1 - tint) + tint * Ctint(color);
+        }
+
+        static float3
+        Fsheen(Surface surface, float3 color, float tint, float HoV, float NoV) {
+            return Csheen(color, tint) * pow(1 - HoV, 2) * NoV;
+        }
+    };
+
+    static float3 sample_direction(float3 normal, inout uint seed) {
+        return cosine_hemisphere(normal, seed);
+    }
+    static float sample_pdf(float NoL) {
+        return NoL / PI;
+    }
+    static float Fd_90(float roughness, float3 half, float3 dir) {
+        return (1.0 / 2.0) + 2 * roughness * pow(dot(dir, half), 2);
+    }
+    static float Fd(float roughness, float3 n, float3 w, float3 h, float3 wo) {
+        float ndw = abs(dot(n, w));
+        float fd90 = Fd_90(roughness, h, wo);
+        return 1.0 + (fd90 - 1.0) * pow(1.0 - ndw, 5);
+    }
+    static float3 diffuse_bsdf(float3 albedo,
+                               float roughness,
+                               float3 n,
+                               float3 view,
+                               float3 dir,
+                               float3 half) {
+        let fd_out = Fd(roughness, n, view, half, dir);
+        let fd_in = Fd(roughness, n, dir, half, view);
+        let f = albedo * fd_in * fd_out;
+        return f;
+    }
+
+    static float Fss_90(float roughness, float3 view, float3 half) {
+        return roughness * pow(dot(half, view), 2);
+    }
+    static float Fss(float3 normal, float roughness, float3 w, float3 view, float3 half) {
+        return 1 + (1 + (Fss_90(roughness, view, half) - 1) * (1 - dot(normal, w)));
+    }
+
+    static float3 subsurface_bsdf(float3 albedo,
+                                  float roughness,
+                                  float3 normal,
+                                  float3 view,
+                                  float3 dir,
+                                  float3 half) {
+        let fss = Fss(normal, roughness, dir, view, half) *
+                  Fss(normal, roughness, view, view, half);
+        let denom = max(dot(normal, dir) + dot(normal, view), 1e-5);
+        let absorption = (1.0 / denom) - 0.5;
+        let f = ((1.25 * albedo) / PI) * (fss * absorption + 0.5);
+        return f;
+    }
+
+    LobeResult sample(float3 view, Surface surface, float2 u, inout uint seed) {
+        let dir = sample_direction(surface.normal, seed);
+        let half = normalize(view + dir);
+
+        let NoL = max(dot(surface.normal, dir), 1e-5);
+        let diffuse = diffuse_bsdf(color, roughness, surface.normal, view, dir, half);
+        let csubsurface =
+            subsurface_bsdf(color, roughness, surface.normal, view, dir, half);
+        let HoV = dot(half, view);
+        let NoV = dot(surface.normal, view);
+
+        let sheen = Sheen::Fsheen(surface, color, sheen_tint, HoV, NoV);
+
+        let f = (((1 - subsurface) * diffuse) + (subsurface * csubsurface) +
+                 (sheen_weight * sheen)) /
+                PI;
+        let pdf = sample_pdf(NoL);
+
+        if (pdf <= 1e-5f) {
+            return { float3(0), float3(0) };
+        }
+
+        return { (f * NoL) / pdf, dir };
+    }
+};
+
+struct Clearcoat {
+    static float ag(float clearcoat_roughness) {
+        return (1 - clearcoat_roughness) * 0.1 + clearcoat_roughness * 0.001;
+    }
+    static float R0(float ior) {
+        let f = (ior - 1) / (ior + 1);
+        return f * f;
+    }
+};
+
+struct GGXLobe : Lobe {
+    float3 F0;
+    float roughness;
+    LobeResult sample(float3 view, Surface surface, float2 u, inout uint seed) {
+        let a = max(roughness * roughness, 0.0);
+        let a2 = a * a;
+        let wo_local = to_local_vndf(view, surface);
+
+        let wm_local = VNDF::GgxVndf(wo_local, a2, u);
+        let wi_local = reflect(-wo_local, wm_local);
+        let wi_world = to_world_vndf(wi_local, surface);
+
+        let dir = wi_world;
+        if (BsdfNDot(wi_local) <= 1e-5f) {
+            return { float3(0), dir };
+        }
+        let VoH = max(dot(wi_local, wm_local), 1e-5);
+        float3 F = fresnel(F0, VoH);
+
+        let G1 = VNDF::SmithGGXMasking(wi_local, wo_local, a2);
+        let G2 = VNDF::SmithGGXMaskingShadowing(wi_local, wo_local, a2);
+        let throughput = (F * (G2 / G1));
+        return { throughput, dir };
+    }
+};
+
 // https://cseweb.ucsd.edu/~tzli/cse272/wi2022/homework1.pdf
 public struct Principled : Material {
     public struct conductor_params {
@@ -119,11 +252,6 @@ public struct Principled : Material {
         public float tint = 0;
     };
 
-    public struct specular_params {
-        public float weight = 0;
-        public float tint = 0;
-    };
-
     public struct clearcoat_params {
         public float weight = 0;
         public float gloss = 1;
@@ -135,183 +263,56 @@ public struct Principled : Material {
 
     public diffuse_pararms pdiffuse;
     public sheen_params psheen;
-    public specular_params pspecular;
     public clearcoat_params pclearcoat;
-
-    struct Diffuse {
-        static float3 sample_direction(float3 normal, inout uint seed) {
-            return cosine_hemisphere(normal, seed);
-        }
-        static float sample_pdf(float NoL) {
-            return NoL / PI;
-        }
-        static float Fd_90(float roughness, float3 half, float3 dir) {
-            return (1.0 / 2.0) + 2 * roughness * pow(dot(dir, half), 2);
-        }
-        static float Fd(float roughness, float3 n, float3 w, float3 h, float3 wo) {
-            float ndw = abs(dot(n, w));
-            float fd90 = Fd_90(roughness, h, wo);
-            return 1.0 + (fd90 - 1.0) * pow(1.0 - ndw, 5);
-        }
-        static float3 diffuse_bsdf(float3 albedo,
-                                   float roughness,
-                                   float3 n,
-                                   float3 view,
-                                   float3 dir,
-                                   float3 half) {
-            let fd_out = Fd(roughness, n, view, half, dir);
-            let fd_in = Fd(roughness, n, dir, half, view);
-            let f = albedo * fd_in * fd_out;
-            return f;
-        }
-
-        static float Fss_90(float roughness, float3 view, float3 half) {
-            return roughness * pow(dot(half, view), 2);
-        }
-        static float
-        Fss(float3 normal, float roughness, float3 w, float3 view, float3 half) {
-            return 1 + (1 + (Fss_90(roughness, view, half) - 1) * (1 - dot(normal, w)));
-        }
-
-        static float3 subsurface_bsdf(float3 albedo,
-                                      float roughness,
-                                      float3 normal,
-                                      float3 view,
-                                      float3 dir,
-                                      float3 half) {
-            let fss = Fss(normal, roughness, dir, view, half) *
-                      Fss(normal, roughness, view, view, half);
-            let denom = max(dot(normal, dir) + dot(normal, view), 1e-5);
-            let absorption = (1.0 / denom) - 0.5;
-            let f = ((1.25 * albedo) / PI) * (fss * absorption + 0.5);
-            return f;
-        }
-    };
-
-    struct Clearcoat {
-        static float ag(float clearcoat_roughness) {
-            return (1 - clearcoat_roughness) * 0.1 + clearcoat_roughness * 0.001;
-        }
-        static float R0(float ior) {
-            let f = (ior - 1) / (ior + 1);
-            return f * f;
-        }
-    };
-
-    struct Sheen {
-        static float3 Ctint(float3 color) {
-            let lum = luminance(color);
-            return (lum > 0) ? (color / lum) : 1;
-        }
-        static float3 Csheen(float3 color, float3 tint) {
-            return (1 - tint) + tint * Ctint(color);
-        }
-
-        static float3
-        Fsheen(Surface surface, float3 color, sheen_params params, float HoV, float NoV) {
-            return Csheen(color, params.tint) * pow(1 - HoV, 2)*NoV;
-        }
-    };
 
     public void scatter(Surface surface, inout State state) {
         let view = -state.ray.Direction;
-        let NoV = max(dot(surface.normal, view), 1e-5);
 
         let lum = luminance(color);
         let F0 = lerp(float3(0.04), color, metallic);
         let spec_weight = luminance(F0);
+
         let es = spec_weight;
         let ed = (1.0 - metallic);
-
-        let ec = 0.04 * pclearcoat.weight;
-        let total = max(ed + es + ec, 1e-6);
+        let ec = 0.05 * pclearcoat.weight;
+        let total = ed + es + ec;
 
         let pd = ed / total;
-        let ps = es / total;
+        let pm = es / total;
         let pc = ec / total;
 
         let r = random::unit(state.seed);
-        let u = float2(random::unit(state.seed), random::unit(state.seed));
+        let u = random::f2(state.seed);
 
         let dcond = pd;
-        let scond = pd + ps;
-        let ccond = pd + ps + pc;
+        let mcond = pd + pm;
+        let ccond = pd + pm + pc;
 
+        var result = LobeResult(0, 0);
         if (r < dcond) {
-            let dir = Diffuse::sample_direction(surface.normal, state.seed);
-            let half = normalize(view + dir);
-
-            let NoL = max(dot(surface.normal, dir), 1e-5);
-            let diffuse =
-                Diffuse::diffuse_bsdf(color, roughness, surface.normal, view, dir, half);
-            let subsurface = Diffuse::subsurface_bsdf(color,
-                                                      roughness,
-                                                      surface.normal,
-                                                      view,
-                                                      dir,
-                                                      half);
-            let HoV = dot(half, view);
-            let sheen = Sheen::Fsheen(surface, color, psheen, HoV, NoV);
-
-            let f = (((1 - pdiffuse.subsurface) * diffuse) +
-                    (pdiffuse.subsurface * subsurface) + (psheen.weight * sheen))/PI;
-            let pdf = Diffuse::sample_pdf(NoL);
-            if (pdf <= 1e-5f) {
-                state.throughput = float3(0);
-                return;
-            }
-            state.throughput *= f * NoL / (pdf * pd);
-            state.ray.Direction = dir;
-        } else if (r < scond) {
-            let a = max(roughness * roughness, 0.0);
-            let a2 = a * a;
-            let wo_local = to_local_vndf(view, surface);
-
-            let wm_local = VNDF::GgxVndf(wo_local, a2, u);
-            let wi_local = reflect(-wo_local, wm_local);
-            let wi_world = to_world_vndf(wi_local, surface);
-
-            let dir = wi_world;
-            var throughput = float3(0);
-
-            if (BsdfNDot(wi_local) <= 1e-5f) {
-                state.throughput = float3(0);
-                return;
-            }
-            let VoH = max(dot(wi_local, wm_local), 1e-5);
-            float3 F = fresnel(F0, VoH);
-
-            let G1 = VNDF::SmithGGXMasking(wi_local, wo_local, a2);
-            let G2 = VNDF::SmithGGXMaskingShadowing(wi_local, wo_local, a2);
-            throughput = (F * (G2 / G1)) / (ps);
-
-            state.ray.Direction = dir;
-            state.throughput *= throughput;
+            let lobe = DiffuseLobe(color,
+                                   roughness,
+                                   pdiffuse.subsurface,
+                                   psheen.tint,
+                                   psheen.weight);
+            result = lobe.sample(view, surface, u, state.seed);
+            result.throughput /= pd;
+        } else if (r < mcond) {
+            let lobe = GGXLobe(F0, roughness);
+            result = lobe.sample(view, surface, u, state.seed);
+            result.throughput /= pm;
         } else {
-            static let F0 = Clearcoat::R0(1.5);
-            let a = max(Clearcoat::ag(pclearcoat.gloss), 0.02);
-            let a2 = a * a;
-            let wo_local = to_local_vndf(view, surface);
-            let wm_local = VNDF::GgxVndf(wo_local, a2, u);
-            let wi_local = reflect(-wo_local, wm_local);
-            let wi_world = to_world_vndf(wi_local, surface);
-            state.ray.Direction = wi_world;
-
-            if (BsdfNDot(wi_local) <= 1e-5f) {
-                state.throughput = float3(0);
-                return;
-            }
-
-            let VoH = max(dot(wi_local, wm_local), 1e-5);
-            let F = fresnel(F0, VoH);
-
-            let G1 = max(VNDF::SmithGGXMasking(wi_local, wo_local, a2), 1e-5);
-            let G2 = VNDF::SmithGGXMaskingShadowing(wi_local, wo_local, a2);
-            state.throughput *= (pclearcoat.weight * F * (G2 / G1)) / pc;
+            let lobe =
+                GGXLobe(Clearcoat::R0(1.5), max(Clearcoat::ag(pclearcoat.gloss), 0.02));
+            result = lobe.sample(view, surface, u, state.seed);
+            result.throughput *= pclearcoat.weight;
+            result.throughput /= pc;
         }
         // else {
         // glass
         // scatter_glass(surface, state);
         // }
+        state.throughput *= result.throughput;
+        state.ray.Direction = result.direction;
     }
 }

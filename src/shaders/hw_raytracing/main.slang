@@ -11,11 +11,11 @@ import emission;
 // adaptive sampling: https://cs184.eecs.berkeley.edu/sp21/docs/proj3-1-part-5
 struct PC {
     struct Buffers {
-        float3* verts;
-        float3* norms;
-        float2* uvs;
-        uint* indicies;
-        uint* normals_indicies;
+        const Ptr<float3, Access.Read> verts;
+        const Ptr<float3, Access.Read> norms;
+        const Ptr<float2, Access.Read> uvs;
+        const Ptr<uint, Access.Read> indicies;
+        const Ptr<uint, Access.Read> normals_indicies;
     };
 
     struct Geometry {
@@ -41,10 +41,10 @@ struct PC {
     uint2 pos;
     float2 mouse;
 
-    Buffers* buffers;
-    Geometry* geometries;
-    Range* ranges;
-    Material* materials;
+    const Ptr<Buffers, Access.Read> buffers;
+    const Ptr<Geometry, Access.Read> geometries;
+    const Ptr<Range, Access.Read> ranges;
+    const Ptr<Material, Access.Read> materials;
 };
 
 [[vk::push_constant]]
@@ -56,8 +56,8 @@ RaytracingAccelerationStructure tlas;
 [[vk::binding(1, 0)]]
 RWTexture2D<float4> output;
 
-[[vk::binding(2, 0)]]
-RWTexture2D<float3> normals;
+// [[vk::binding(2, 0)]]
+// RWTexture2D<float3> normals;
 
 struct Screen {
     uint3 resolution;
@@ -143,6 +143,7 @@ float3 sample_phase_function(float3 wo, float g, inout uint seed) {
 float convergence(float sigma, float n) {
     return 1.96 * (sigma) / sqrt(n);
 }
+
 bool check_convergence(inout float s1, inout float s2, float xk, int n, float threshold) {
     s1 += xk;
     s2 += xk * xk;
@@ -158,8 +159,8 @@ bool check_convergence(inout float s1, inout float s2, float xk, int n, float th
 void raygen_entry() {
     // use specialization constants for these 2
     //  or at least I think I can use them here
-    static let SAMPLES_PER_PIXEL = 2;
-    static let BOUNCES = 12;
+    static let SAMPLES_PER_PIXEL = 1;
+    static let BOUNCES = 20;
     static let NOISE_THRESHOLD = 0.01;
 
     let ray_origin = float3(0, 2.0, 9.0);
@@ -175,7 +176,6 @@ void raygen_entry() {
     var sample = uint(0);
     var sample_accumilator = float3(0);
 
-    var pixel_samples = 0;
     for (; sample < SAMPLES_PER_PIXEL; sample++) {
         let jitter = random::f2(seed);
         let uv = (float2(screen.coords.xy) + jitter - (pc.res.xy * 0.5)) / (pc.res.y);
@@ -206,10 +206,9 @@ void raygen_entry() {
             }
             payload.throughput /= p;
         }
-        pixel_samples += 1;
         sample_accumilator += payload.color;
     }
-    let color = sample_accumilator / sample;
+    let color = sample_accumilator / max(sample, 1);
     let weight = 1.0 / float(pc.frame + 1);
     output[screen.coords.xy] = float4(lerp(prev.rgb, color, weight), 1.0);
     // output[screen.coords.xy] = float4(lerp(prev.rgb, color, 0.1), 1.0);
@@ -249,45 +248,33 @@ void scatter(const uint material,
              const HitInfo hit,
              const Surface surface,
              inout State state) {
-    let glass = Glass(float3(0.1, 0.9, 0.5), 2, 0.0, 0.01);
-
-    let cloth_diffuse = Principled::diffuse_pararms(0);
-    let cloth_sheen = Principled::sheen_params(10, 0);
-    let cloth = Principled(hit.pos.x > 0 ? float3(0.8, 0.6, 0.2) : float3(0.2, 0.5, 0.8),
-                           0.5,
-                           0,
-                           cloth_diffuse,
-                           cloth_sheen);
-
-    let is_floor = hit.pos.y < 0.001;
-    let diffuse_dif = Principled::diffuse_pararms(0);
-    let diffuse_specular = Principled::specular_params(1, 1);
-    let diffuse_clearcoat = Principled::clearcoat_params(0, 0);
-    let diffuse = Principled(float3(0.8),
-                             0.5,
-                             is_floor ? 1.0 : 0.0,
-                             diffuse_dif,
-                             {},
-                             diffuse_specular,
-                             diffuse_clearcoat);
-
-    let mirror_specular = Principled::specular_params(0, 0);
-    let mirror = Principled(float3(0.8, 0.8, 0.8), 0.0, 1, {}, {}, mirror_specular, {});
-
-    let default_mat = Principled(float3(0.8, 0.1, 0.4), 0.8, 0.0);
-
     state.hit = true;
     switch (material) {
-    case 0: 
-        return glass.scatter(surface, state);
-    case 1: 
-        return cloth.scatter(surface, state);
-    case 2: 
+    case 0:
+    case 2: {
+        let mirror = Principled(float3(1), 0.4, 1, {}, {}, {});
         return mirror.scatter(surface, state);
-    case 3: 
+    }
+    case 1: {
+        let cloth_diffuse = Principled::diffuse_pararms(0);
+        let cloth_sheen = Principled::sheen_params(5, 0);
+        let cloth = Principled(float3(0.7, 0, 0), 0.5, 0, cloth_diffuse, cloth_sheen);
+        return cloth.scatter(surface, state);
+    }
+    case 3: {
+        let diffuse_dif = Principled::diffuse_pararms(0);
+        let diffuse_clearcoat = Principled::clearcoat_params(2, 1);
+        let diffuse = Principled(float3(0.8), 0.5, 0.0, diffuse_dif, {}, diffuse_clearcoat);
         return diffuse.scatter(surface, state);
-    default: 
+    }
+    case 4: {
+        let glass = Glass(float3(1), 2, 0.0, 0.2);
+        return glass.scatter(surface, state);
+    }
+    default: {
+        let default_mat = Principled(float3(0.8, 0.1, 0.4), 0.8, 0.0);
         return default_mat.scatter(surface, state);
+    }
     };
 }
 

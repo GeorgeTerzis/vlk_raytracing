@@ -10,7 +10,7 @@ public struct random {
 
     public static float unit(inout uint seed) {
         seed = pcg_hash(seed);
-        let n = float(seed) / float(0xffffffffu);
+        let n = float(seed) * (1.0 / 4294967296.0);
         return n;
     }
 

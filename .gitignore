@@ -9,6 +9,10 @@ src/shaders/noise
 
 *.spv
 
+
+profiling/
+captures/
+
 zig-cache/
 zig-out/
 build/
