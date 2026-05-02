@@ -1261,7 +1261,7 @@ pub const vlk_shader_module = struct {
         device.logical_device.destroyShaderModule(self.module, null);
     }
 
-    pub fn stageInfo(self: @This()) vk.PipelineShaderStageCreateInfo {
+    pub fn info(self: @This()) vk.PipelineShaderStageCreateInfo {
         return .{
             .stage = self.stage,
             .module = self.module,
@@ -1281,6 +1281,7 @@ pub const vlk_pipeline = struct {
             .descriptor_sets = undefined,
             .descriptor_set_count = 0,
         };
+
         if (sets) |s| {
             @memcpy(inst.descriptor_sets[0..s.len], s);
             inst.descriptor_set_count = @intCast(s.len);
@@ -1352,12 +1353,128 @@ pub fn vlk_get_raytracing_properties(vki: *vlk_instance, device: *vlk_device) vk
     return rt_props;
 }
 
+pub fn vlk_make_raytracing_pipeline_info(
+    stages: []const vk.PipelineShaderStageCreateInfo,
+    groups: []const vk.RayTracingShaderGroupCreateInfoKHR,
+    max_recursion_depth: u32,
+    layout: vk.PipelineLayout,
+) vk.RayTracingPipelineCreateInfoKHR {
+    return .{
+        .base_pipeline_handle = .null_handle,
+        .base_pipeline_index = -1,
+        .stage_count = @intCast(stages.len),
+        .p_stages = stages.ptr,
+        .group_count = @intCast(groups.len),
+        .p_groups = groups.ptr,
+        .max_pipeline_ray_recursion_depth = max_recursion_depth,
+        .layout = layout,
+    };
+}
+
+pub const rt_group_info = struct {
+    pub fn general(index: u32) vk.RayTracingShaderGroupCreateInfoKHR {
+        return .{
+            .type = .general_khr,
+            .general_shader = index,
+            .closest_hit_shader = vk.SHADER_UNUSED_KHR,
+            .any_hit_shader = vk.SHADER_UNUSED_KHR,
+            .intersection_shader = vk.SHADER_UNUSED_KHR,
+        };
+    }
+
+    pub fn procedural_hit(closest_index: u32, intersection_index: u32) vk.RayTracingShaderGroupCreateInfoKHR {
+        return .{
+            .type = .procedural_hit_group_khr,
+            .general_shader = vk.SHADER_UNUSED_KHR,
+            .closest_hit_shader = closest_index,
+            .any_hit_shader = vk.SHADER_UNUSED_KHR,
+            .intersection_shader = intersection_index,
+        };
+    }
+
+    pub fn procedural_hit_any(closest_index: u32, any_index: u32, intersection_index: u32) vk.RayTracingShaderGroupCreateInfoKHR {
+        return .{
+            .type = .procedural_hit_group_khr,
+            .general_shader = vk.SHADER_UNUSED_KHR,
+            .closest_hit_shader = closest_index,
+            .any_hit_shader = any_index,
+            .intersection_shader = intersection_index,
+        };
+    }
+
+    pub fn triangles_hit_any(closest_index: u32, any_index: u32) vk.RayTracingShaderGroupCreateInfoKHR {
+        return .{
+            .type = .triangles_hit_group_khr,
+            .general_shader = vk.SHADER_UNUSED_KHR,
+            .closest_hit_shader = closest_index,
+            .any_hit_shader = any_index,
+            .intersection_shader = vk.SHADER_UNUSED_KHR,
+        };
+    }
+
+    pub fn triangles_hit(index: u32) vk.RayTracingShaderGroupCreateInfoKHR {
+        return .{
+            .type = .triangles_hit_group_khr,
+            .general_shader = vk.SHADER_UNUSED_KHR,
+            .closest_hit_shader = index,
+            .any_hit_shader = vk.SHADER_UNUSED_KHR,
+            .intersection_shader = vk.SHADER_UNUSED_KHR,
+        };
+    }
+};
+
+fn vlk_pipeline_layout_create_info(push_constants: []const vk.PushConstantRange, descriptor_sets: []const vk.DescriptorSetLayout) vk.PipelineLayoutCreateInfo {
+    return vk.PipelineLayoutCreateInfo{
+        .push_constant_range_count = @intCast(push_constants.len),
+        .p_push_constant_ranges = push_constants.ptr,
+
+        .set_layout_count = @intCast(descriptor_sets.len),
+        .p_set_layouts = descriptor_sets.ptr,
+    };
+}
+
+const Slider = struct {
+    slice: []u8,
+    index: usize,
+
+    pub fn get(self: *@This(), count: usize) ![]u8 {
+        if (self.index + count > self.slice.len)
+            return error.OutOfPoolMemory;
+        const result = self.slice[self.index..][0..count];
+
+        self.index += count;
+        return result;
+    }
+};
+
+const SbtLayout = struct {
+    offset: usize,
+    size: usize,
+    count: usize,
+
+    pub fn init(handle_alignment: usize, handle_size: usize, count: usize) SbtLayout {
+        return .{
+            .offset = 0,
+            .size = std.mem.alignForward(usize, count * handle_size, handle_alignment),
+            .count = count,
+        };
+    }
+
+    pub fn next(self: @This(), handle_alignment: usize, handle_size: usize, count: usize, base_alignment: usize) SbtLayout {
+        return .{
+            .offset = std.mem.alignForward(usize, self.offset + self.size, base_alignment),
+            .size = std.mem.alignForward(usize, count * handle_size, handle_alignment),
+            .count = count,
+        };
+    }
+};
+
 pub const vlk_raytracing_pipeline = struct {
     pub const shader_binding_table = struct {
         buffer: vlk_vma_buffer,
         raygen_region: vk.StridedDeviceAddressRegionKHR,
         miss_region: vk.StridedDeviceAddressRegionKHR,
-        hit_region: vk.StridedDeviceAddressRegionKHR,
+        closest_hit_region: vk.StridedDeviceAddressRegionKHR,
         callable_region: vk.StridedDeviceAddressRegionKHR,
 
         pub fn deinit(self: @This(), vma: *vlk_vma) void {
@@ -1371,15 +1488,12 @@ pub const vlk_raytracing_pipeline = struct {
             pipeline: vk.Pipeline,
             rt_props: *const vk.PhysicalDeviceRayTracingPipelinePropertiesKHR,
             pipeline_info: vk.RayTracingPipelineCreateInfoKHR,
+            raygen_count: usize,
+            miss_count: usize,
+            closest_hit_count: usize,
+            callable_count: usize,
             gp: ImediateSubmit,
         ) !shader_binding_table {
-
-            //do not touch these for now
-            const raygen_count = 1;
-            const miss_count = 1;
-            const hit_count = 1;
-            const callable_count = 0;
-
             //get properties
             const handle_size = rt_props.shader_group_handle_size;
             const handle_alignment = rt_props.shader_group_handle_alignment;
@@ -1391,6 +1505,8 @@ pub const vlk_raytracing_pipeline = struct {
             //handles
             const handle_list_size: usize = handle_size * group_count;
             const handles = try allocator.alloc(u8, handle_list_size);
+            defer allocator.free(handles);
+
             try device.logical_device.getRayTracingShaderGroupHandlesKHR(
                 pipeline,
                 0,
@@ -1399,18 +1515,34 @@ pub const vlk_raytracing_pipeline = struct {
                 @ptrCast(handles.ptr),
             );
 
-            //size
-            const raygen_size = std.mem.alignForward(u64, raygen_count * handle_size, handle_alignment);
-            const miss_size = std.mem.alignForward(u64, miss_count * handle_size, handle_alignment);
-            const hit_size = std.mem.alignForward(u64, hit_count * handle_size, handle_alignment);
-            const callable_size = std.mem.alignForward(u64, callable_count * handle_size, handle_alignment);
-
-            const raygen_offset: u64 = 0;
-            const miss_offset: u64 = std.mem.alignForward(u64, raygen_size, base_alignment);
-            const hit_offset: u64 = std.mem.alignForward(u64, miss_offset + miss_size, base_alignment);
-            const callable_offset: u64 = std.mem.alignForward(u64, hit_offset + hit_size, base_alignment);
-
-            const buffer_size = callable_offset + callable_size;
+            const raygen = SbtLayout.init(
+                @intCast(handle_alignment),
+                @intCast(handle_size),
+                @intCast(raygen_count),
+            );
+            const miss = raygen.next(
+                handle_alignment,
+                handle_size,
+                miss_count,
+                base_alignment,
+            );
+            const closest_hit = miss.next(
+                handle_alignment,
+                handle_size,
+                closest_hit_count,
+                base_alignment,
+            );
+            const callable = closest_hit.next(
+                handle_alignment,
+                handle_size,
+                callable_count,
+                base_alignment,
+            );
+            //this causes some extra padding on our buffer if callable.size == 0
+            // I should add an if check here
+            // but I would prefer a more "proper" way maybe shove them into an array so I can loop and check which one is the last idk
+            // for now this will have to do
+            const buffer_size = callable.offset + callable.size;
 
             const region_buffer = try vlk_vma_buffer.init_aligned(
                 vma,
@@ -1430,32 +1562,33 @@ pub const vlk_raytracing_pipeline = struct {
             const mapping: []u8 = mapping_ptr[0..buffer_size];
             {
                 //build staging buffer
+                // unfortuantly we can't really do the _with_data since we have some alignment rules to adhere to
+
                 {
-                    const handle_size_u: usize = @intCast(handle_size);
-                    const ray_offset_u: usize = @intCast(raygen_offset);
-                    const miss_offset_u: usize = @intCast(miss_offset);
-                    const hit_offset_u: usize = @intCast(hit_offset);
-
-                    {
-                        // raygen (g0)
+                    var handle_slider = Slider{ .slice = handles, .index = 0 };
+                    for (0..raygen.count) |i| {
                         @memcpy(
-                            mapping[ray_offset_u .. ray_offset_u + handle_size_u],
-                            handles[0 * handle_size_u .. 1 * handle_size_u],
+                            mapping[raygen.offset + i * handle_size ..][0..handle_size],
+                            try handle_slider.get(handle_size),
                         );
-
-                        // miss (g1)
+                    }
+                    for (0..miss.count) |i| {
                         @memcpy(
-                            mapping[miss_offset_u .. miss_offset_u + handle_size_u],
-                            handles[1 * handle_size_u .. 2 * handle_size_u],
+                            mapping[miss.offset + i * handle_size ..][0..handle_size],
+                            try handle_slider.get(handle_size),
                         );
-
-                        // hit (g2)
+                    }
+                    for (0..closest_hit.count) |i| {
                         @memcpy(
-                            mapping[hit_offset_u .. hit_offset_u + handle_size_u],
-                            handles[2 * handle_size_u .. 3 * handle_size_u],
+                            mapping[closest_hit.offset + i * handle_size ..][0..handle_size],
+                            try handle_slider.get(handle_size),
                         );
-                        // callable shaders we do not support them
-                        {}
+                    }
+                    for (0..callable.count) |i| {
+                        @memcpy(
+                            mapping[callable.offset + i * handle_size ..][0..handle_size],
+                            try handle_slider.get(handle_size),
+                        );
                     }
                 }
 
@@ -1466,37 +1599,40 @@ pub const vlk_raytracing_pipeline = struct {
                     try gp.submit_and_wait(device.queue, device.logical_device);
                 }
             }
-            const region_buffer_address = region_buffer.address(device);
-            // Build the strided address regions
+            const address = region_buffer.address(device);
+
+            const raygen_stride = std.mem.alignForward(u64, handle_size, base_alignment);
+            const handle_stride = std.mem.alignForward(u64, handle_size, handle_alignment);
+
             const raygen_region = vk.StridedDeviceAddressRegionKHR{
-                .device_address = region_buffer_address + raygen_offset,
-                .stride = std.mem.alignForward(u64, handle_size, base_alignment),
-                .size = raygen_size,
+                .device_address = address + raygen.offset,
+                .stride = raygen_stride,
+                .size = raygen.size,
             };
 
             const miss_region = vk.StridedDeviceAddressRegionKHR{
-                .device_address = region_buffer_address + miss_offset,
-                .stride = std.mem.alignForward(u64, handle_size, handle_alignment),
-                .size = miss_size,
+                .device_address = address + miss.offset,
+                .stride = handle_stride,
+                .size = miss.size,
             };
 
-            const hit_region = vk.StridedDeviceAddressRegionKHR{
-                .device_address = region_buffer_address + hit_offset,
-                .stride = std.mem.alignForward(u64, handle_size, handle_alignment),
-                .size = hit_size,
+            const closest_hit_region = vk.StridedDeviceAddressRegionKHR{
+                .device_address = address + closest_hit.offset,
+                .stride = handle_stride,
+                .size = closest_hit.size,
             };
 
             const callable_region = vk.StridedDeviceAddressRegionKHR{
-                .device_address = 0,
-                .stride = 0,
-                .size = 0,
+                .device_address = address + callable.offset,
+                .stride = handle_stride,
+                .size = callable.size,
             };
 
             return .{
                 .buffer = region_buffer,
                 .raygen_region = raygen_region,
                 .miss_region = miss_region,
-                .hit_region = hit_region,
+                .closest_hit_region = closest_hit_region,
                 .callable_region = callable_region,
             };
         }
@@ -1514,8 +1650,49 @@ pub const vlk_raytracing_pipeline = struct {
         gp: ImediateSubmit,
         shader_modules: []const vlk_shader_module,
     ) !vlk_raytracing_pipeline {
+        const stages = [_]vk.PipelineShaderStageCreateInfo{
+            shader_modules[0].info(),
+            shader_modules[1].info(),
+            shader_modules[2].info(),
+        };
 
+        //ray tracing specific dependant on the stages
+        // groups can be used to make shader combinations
+        // for example triangle_hit + any hit
+        // what you can combine is determined by the vulkan spec
+        // https://docs.vulkan.org/refpages/latest/refpages/source/VkRayTracingShaderGroupCreateInfoKHR.html
+        // https://docs.vulkan.org/refpages/latest/refpages/source/VkRayTracingPipelineCreateInfoKHR.html
+        const groups = [_]vk.RayTracingShaderGroupCreateInfoKHR{
+            //raygen
+            rt_group_info.general(0),
+            //miss
+            rt_group_info.general(1),
+            //hit
+            rt_group_info.triangles_hit(2),
+        };
+        //do not touch these for now
+        var raygen_count: usize = 0;
+        var miss_count: usize = 0;
+        var closest_hit_count: usize = 0;
+        var callable_count: usize = 0;
+
+        for (groups) |group| {
+            switch (group.type) {
+                .general_khr => {
+                    const stage = stages[group.general_shader].stage;
+                    if (stage.raygen_bit_khr) raygen_count += 1;
+                    if (stage.miss_bit_khr) miss_count += 1;
+                    if (stage.callable_bit_khr) callable_count += 1;
+                },
+                .triangles_hit_group_khr => closest_hit_count += 1,
+                .procedural_hit_group_khr => closest_hit_count += 1,
+                _ => {},
+            }
+        }
+
+        //generic
         // push constants
+        // also derived form the shader idealy
         const push_constants = [_]vk.PushConstantRange{
             .{
                 .offset = 0,
@@ -1527,10 +1704,10 @@ pub const vlk_raytracing_pipeline = struct {
                 },
             },
         };
-        //
 
-        // set 0
-        const set0_bindings = [_]vk.DescriptorSetLayoutBinding{
+        //from shader but every shader will have this
+        // set 0 derived from the shader
+        const set0_layout = try set_create_layout(device, &[_]vk.DescriptorSetLayoutBinding{
             .{
                 .binding = 0,
                 .descriptor_type = .acceleration_structure_khr,
@@ -1543,86 +1720,35 @@ pub const vlk_raytracing_pipeline = struct {
                 .descriptor_count = 1,
                 .stage_flags = .{ .raygen_bit_khr = true },
             },
-        };
-        const set0_layout = try set_create_layout(device, &set0_bindings);
+        });
 
         const descriptor_sets = [_]vk.DescriptorSetLayout{
             set0_layout,
         };
-        const pipeline_layout_info = vk.PipelineLayoutCreateInfo{
-            .push_constant_range_count = push_constants.len,
-            .p_push_constant_ranges = &push_constants,
 
-            .set_layout_count = descriptor_sets.len,
-            .p_set_layouts = &descriptor_sets,
-        };
-        //
+        //generic
+        const pipeline_layout_info = vlk_pipeline_layout_create_info(&push_constants, &descriptor_sets);
+        //generic
         const layout = try device.logical_device.createPipelineLayout(&pipeline_layout_info, null);
-        const stages = [_]vk.PipelineShaderStageCreateInfo{
-            //raygen
-            .{
-                .p_name = "raygen_entry",
-                .stage = .{ .raygen_bit_khr = true },
-                .module = shader_modules[0].module,
-            },
-            //miss
-            .{
-                .p_name = "miss_entry",
-                .stage = .{ .miss_bit_khr = true },
-                .module = shader_modules[1].module,
-            },
-            //hit
-            .{
-                .p_name = "closest_hit_entry",
-                .stage = .{ .closest_hit_bit_khr = true },
-                .module = shader_modules[2].module,
-            },
-        };
-        const groups = [_]vk.RayTracingShaderGroupCreateInfoKHR{
-            //raygen
-            vk.RayTracingShaderGroupCreateInfoKHR{
-                .any_hit_shader = vk.SHADER_UNUSED_KHR,
-                .intersection_shader = vk.SHADER_UNUSED_KHR,
-                .closest_hit_shader = vk.SHADER_UNUSED_KHR,
-                .type = .general_khr,
-                .general_shader = 0,
-            },
-            //miss
-            vk.RayTracingShaderGroupCreateInfoKHR{
-                .any_hit_shader = vk.SHADER_UNUSED_KHR,
-                .intersection_shader = vk.SHADER_UNUSED_KHR,
-                .closest_hit_shader = vk.SHADER_UNUSED_KHR,
-                .type = .general_khr,
-                .general_shader = 1,
-            },
-            //hit
-            vk.RayTracingShaderGroupCreateInfoKHR{
-                .type = .triangles_hit_group_khr,
-                .any_hit_shader = vk.SHADER_UNUSED_KHR,
-                .intersection_shader = vk.SHADER_UNUSED_KHR,
-                .general_shader = vk.SHADER_UNUSED_KHR,
-                .closest_hit_shader = 2,
-            },
-        };
-        //
 
+        //raytracing specific
         const pipeline_info = [_]vk.RayTracingPipelineCreateInfoKHR{
-            .{
-                .base_pipeline_handle = .null_handle,
-                .base_pipeline_index = 0,
-                .stage_count = stages.len,
-                .p_stages = &stages,
-                .group_count = groups.len,
-                .p_groups = &groups,
-                .max_pipeline_ray_recursion_depth = rt_props.max_ray_recursion_depth,
-                .layout = layout,
-            },
+            vlk_make_raytracing_pipeline_info(
+                &stages,
+                &groups,
+                rt_props.max_ray_recursion_depth,
+                layout,
+            ),
         };
 
         var pipelines = [_]vk.Pipeline{.null_handle};
-        _ = try device.logical_device.createRayTracingPipelinesKHR(
-            .null_handle,
-            .null_handle,
+
+        const pipeline_cache: vk.PipelineCache = .null_handle;
+        const defered_operation: vk.DeferredOperationKHR = .null_handle;
+
+        const pipeline_result = try device.logical_device.createRayTracingPipelinesKHR(
+            defered_operation,
+            pipeline_cache,
 
             pipeline_info.len,
             &pipeline_info,
@@ -1630,7 +1756,10 @@ pub const vlk_raytracing_pipeline = struct {
             null,
             &pipelines,
         );
+        _ = pipeline_result;
 
+        //after pipeline creation
+        // raytracing specific
         const sbt = try shader_binding_table.init(
             allocator,
             vma,
@@ -1638,6 +1767,12 @@ pub const vlk_raytracing_pipeline = struct {
             pipelines[0],
             rt_props,
             pipeline_info[0],
+
+            raygen_count,
+            miss_count,
+            closest_hit_count,
+            callable_count,
+
             gp,
         );
 

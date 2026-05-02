@@ -124,10 +124,10 @@ const PC = extern struct {
 //     return Self;
 // }
 
-const Resources = struct {
-    local: []emma.local_geometry.geometry,
-    device: []emma.device_geometry,
-};
+// const Resources = struct {
+//     local: []emma.local_geometry.geometry,
+//     device: []emma.device_geometry,
+// };
 
 const ThreadContext = struct {
     allocator: std.mem.Allocator,
@@ -847,7 +847,7 @@ pub fn main() !void {
                         frame.cmd.traceRaysKHR(
                             &pipeline.sbt.raygen_region,
                             &pipeline.sbt.miss_region,
-                            &pipeline.sbt.hit_region,
+                            &pipeline.sbt.closest_hit_region,
                             &pipeline.sbt.callable_region,
                             @intCast(tiles[0].len),
                             @intCast(tiles[1].len),

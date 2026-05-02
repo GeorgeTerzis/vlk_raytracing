@@ -200,7 +200,7 @@ void raygen_entry() {
                 break;
             }
 
-            let p = max(luminance(payload.throughput), 0.01);
+            let p = max(luminance(payload.throughput), 0.001);
             if (random::unit(payload.seed) > p) {
                 break;
             }
@@ -252,27 +252,27 @@ void scatter(const uint material,
     switch (material) {
     case 0:
     case 2: {
-        let mirror = Principled(float3(1), 0.4, 1, {}, {}, {});
+        static let mirror = Principled(float3(1), 0.4, 1, {}, {}, {});
         return mirror.scatter(surface, state);
     }
     case 1: {
-        let cloth_diffuse = Principled::diffuse_pararms(0);
-        let cloth_sheen = Principled::sheen_params(5, 0);
-        let cloth = Principled(float3(0.7, 0, 0), 0.5, 0, cloth_diffuse, cloth_sheen);
+        static let cloth_diffuse = Principled::diffuse_pararms(0);
+        static let cloth_sheen = Principled::sheen_params(5, 0);
+        static let cloth = Principled(float3(0.7, 0, 0), 0.5, 0, cloth_diffuse, cloth_sheen);
         return cloth.scatter(surface, state);
     }
     case 3: {
-        let diffuse_dif = Principled::diffuse_pararms(0);
-        let diffuse_clearcoat = Principled::clearcoat_params(2, 1);
-        let diffuse = Principled(float3(0.8), 0.5, 0.0, diffuse_dif, {}, diffuse_clearcoat);
+        static let diffuse_dif = Principled::diffuse_pararms(0);
+        static let diffuse_clearcoat = Principled::clearcoat_params(2, 1);
+        static let diffuse = Principled(float3(0.8), 0.5, 0.0, diffuse_dif, {}, diffuse_clearcoat);
         return diffuse.scatter(surface, state);
     }
     case 4: {
-        let glass = Glass(float3(1), 2, 0.0, 0.2);
+        static let glass = Glass(float3(1), 2, 0.0, 0.2);
         return glass.scatter(surface, state);
     }
     default: {
-        let default_mat = Principled(float3(0.8, 0.1, 0.4), 0.8, 0.0);
+        static let default_mat = Principled(float3(0.8, 0.1, 0.4), 0.8, 0.0);
         return default_mat.scatter(surface, state);
     }
     };
