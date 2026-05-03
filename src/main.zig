@@ -45,6 +45,121 @@ const PC = extern struct {
     materials: u64 = 0,
 };
 
+const HW_raytracing_pipeline = struct {
+    pipeline: emma.vlk_raytracing_pipeline,
+
+    const PushConstant = extern struct {
+        const Buffers = struct {
+            verts: u64,
+            norms: u64,
+            uvs: u64,
+            indices: u64,
+            normal_indices: u64,
+        };
+
+        const Geometry = extern struct {
+            buffer_index: u32,
+        };
+
+        const Range = extern struct {
+            geometry_indices: u64,
+        };
+
+        width: u32 = 0,
+        height: u32 = 0,
+        time: f32 = 0.0,
+        frame: u32 = 0.0,
+
+        posx: u32 = 0.0,
+        posy: u32 = 0.0,
+
+        mouse: MousePos = .{ .x = 0, .y = 0 },
+
+        buffers: u64 = 0,
+        geometries: u64 = 0,
+        ranges: u64 = 0,
+        materials: u64 = 0,
+    };
+
+    pub fn init(
+        allocator: std.mem.Allocator,
+        u: *emma.vlk_unit,
+        rt_props: *const vk.PhysicalDeviceRayTracingPipelinePropertiesKHR,
+        shader_modules: []const emma.vlk_shader_module,
+        is: emma.ImediateSubmit,
+    ) !@This() {
+        const stages = [_]vk.PipelineShaderStageCreateInfo{
+            shader_modules[0].info,
+            shader_modules[1].info,
+            shader_modules[2].info,
+        };
+
+        // groups can be used to make shader combinations
+        // for example triangle_hit + any hit
+        // what you can combine is determined by the vulkan spec
+        // I should make a builder so this is checked at compiletime
+        // https://docs.vulkan.org/refpages/latest/refpages/source/VkRayTracingShaderGroupCreateInfoKHR.html
+        // https://docs.vulkan.org/refpages/latest/refpages/source/VkRayTracingPipelineCreateInfoKHR.html
+        const groups = [_]vk.RayTracingShaderGroupCreateInfoKHR{
+            //raygen
+            emma.rt_group_info.general(0),
+            //miss
+            emma.rt_group_info.general(1),
+            //hit
+            emma.rt_group_info.triangles_hit(2),
+        };
+        //do not touch these for now
+
+        const push_constant_ranges = [_]vk.PushConstantRange{
+            emma.push_constant_range(
+                PushConstant,
+                emma.FlagBuilder(vk.ShaderStageFlags)
+                    .begin("raygen_bit_khr")
+                    .enable("miss_bit_khr")
+                    .enable("closest_hit_bit_khr")
+                    .build(),
+                0,
+            ),
+        };
+
+        const set_bindings = [_][]const emma.vk.DescriptorSetLayoutBinding{
+            &.{
+                .{
+                    .binding = 0,
+                    .descriptor_type = .acceleration_structure_khr,
+                    .descriptor_count = 1,
+                    .stage_flags = .{ .raygen_bit_khr = true },
+                },
+                .{
+                    .binding = 1,
+                    .descriptor_type = .storage_image,
+                    .descriptor_count = 1,
+                    .stage_flags = .{ .raygen_bit_khr = true },
+                },
+            },
+        };
+
+        const pipeline = try emma.vlk_raytracing_pipeline.init(
+            allocator,
+            u,
+            rt_props,
+            &push_constant_ranges,
+            &set_bindings,
+            &stages,
+            &groups,
+            is,
+        );
+
+        return .{
+            .pipeline = pipeline,
+        };
+    }
+
+    fn deinit(self: @This(), allocator: std.mem.Allocator, u: *emma.vlk_unit) void {
+        self.pipeline.deinit(allocator, &u.vma, &u.device);
+    }
+};
+
 // fn Handle(comptime T: type) type {
 //     const Self = struct {
 //         data: u32 = 0,
@@ -253,8 +368,10 @@ pub fn main() !void {
     //     break :blk result;
     // };
 
+    // const scene_filepath = if (builtin.mode == .Debug) "./scene_lite.zon" else "./scene.zon";
+    const scene_filepath = "./scene.zon";
     var scene_config = blk: {
-        const file = try std.fs.cwd().openFile("./scene.zon", .{});
+        const file = try std.fs.cwd().openFile(scene_filepath, .{});
         defer file.close();
 
         const src = try emma.readfile_allocZ(allocator, file);
@@ -307,6 +424,7 @@ pub fn main() !void {
     var blas_ranges = try std.ArrayList(emma.blas_geometry_range).initCapacity(allocator, scene_config.assets.len);
     var materials = try std.ArrayList(u32).initCapacity(allocator, scene_config.assets.len);
     var instance_transforms = try std.ArrayList(vk.TransformMatrixKHR).initCapacity(allocator, scene_config.assets.len);
+
     for (scene_config.assets) |node| {
         const begin = blas_geometry_storage.len;
         {
@@ -344,6 +462,7 @@ pub fn main() !void {
             }
         }
     }
+
     defer materials.deinit(allocator);
 
     var blas_list = try std.ArrayList(emma.raytracing_acceleration_structure).initCapacity(allocator, 10);
@@ -520,21 +639,21 @@ pub fn main() !void {
 
     const raygen_module = try emma.vlk_shader_module.init(
         &u.device,
-        spirv,
         .{ .raygen_bit_khr = true },
         "raygen_entry",
+        spirv,
     );
     const miss_module = try emma.vlk_shader_module.init(
         &u.device,
-        spirv,
         .{ .miss_bit_khr = true },
         "miss_entry",
+        spirv,
     );
     const closest_hit_module = try emma.vlk_shader_module.init(
         &u.device,
-        spirv,
         .{ .closest_hit_bit_khr = true },
         "closest_hit_entry",
+        spirv,
     );
     defer raygen_module.deinit(&u.device);
     defer miss_module.deinit(&u.device);
@@ -544,16 +663,9 @@ pub fn main() !void {
         raygen_module, miss_module, closest_hit_module,
     };
 
-    var pipeline = try emma.vlk_raytracing_pipeline.init(
-        PC,
-        allocator,
-        &rt_props,
-        &u.vma,
-        &u.device,
-        is,
-        &rt_modules,
-    );
-    defer pipeline.deinit(&u.vma, &u.device);
+    var rt = try HW_raytracing_pipeline.init(allocator, &u, &rt_props, &rt_modules, is);
+    defer rt.deinit(allocator, &u);
+
     std.debug.print("Created pipeline successfully \n", .{});
     //
 
@@ -644,51 +756,50 @@ pub fn main() !void {
 
         const alloc_info = vk.DescriptorSetAllocateInfo{
             .descriptor_pool = descriptor_pool.handle,
-            .descriptor_set_count = 1,
-            .p_set_layouts = &[_]vk.DescriptorSetLayout{
-                pipeline.pipeline.descriptor_set_layout.handle,
-            },
+            .descriptor_set_count = @intCast(rt.pipeline.pipeline.descriptor_set_layouts.len),
+            .p_set_layouts = rt.pipeline.pipeline.descriptor_set_layouts.ptr,
         };
         var descriptor_set: vk.DescriptorSet = undefined;
         try u.device.logical_device.allocateDescriptorSets(&alloc_info, @ptrCast(&descriptor_set));
         var sets = [_]vk.DescriptorSet{
             descriptor_set,
         };
-        const tlas_descriptor_info = vk.WriteDescriptorSetAccelerationStructureKHR{
-            .acceleration_structure_count = 1,
-            .p_acceleration_structures = &[_]vk.AccelerationStructureKHR{tlas.handle},
-        };
-        const image_info = vk.DescriptorImageInfo{
-            .image_view = render_texture.view,
-            .image_layout = vk.ImageLayout.general,
-            .sampler = u.samplers.linear_clamp,
-        };
-        const writes = [_]vk.WriteDescriptorSet{
-            .{
-                .dst_set = descriptor_set,
-                .dst_binding = 0,
-                .descriptor_count = 1,
-                .dst_array_element = 0,
-                .p_texel_buffer_view = undefined,
-                .descriptor_type = .acceleration_structure_khr,
-                .p_image_info = undefined,
-                .p_buffer_info = undefined,
-                .p_next = &tlas_descriptor_info,
-            },
-            .{
-                .dst_set = descriptor_set,
-                .dst_binding = 1,
-                .descriptor_count = 1,
-                .dst_array_element = 0,
-                .descriptor_type = .storage_image,
-                .p_texel_buffer_view = undefined,
-                .p_image_info = @ptrCast(&.{image_info}),
-                .p_buffer_info = undefined,
-            },
-        };
-        u.device.logical_device.updateDescriptorSets(writes.len, &writes, 0, null);
-
-        const rt_pipeline_instance = pipeline.pipeline.instance(sets[0..]);
+        {
+            const tlas_descriptor_info = vk.WriteDescriptorSetAccelerationStructureKHR{
+                .acceleration_structure_count = 1,
+                .p_acceleration_structures = &[_]vk.AccelerationStructureKHR{tlas.handle},
+            };
+            const image_info = vk.DescriptorImageInfo{
+                .image_view = render_texture.view,
+                .image_layout = vk.ImageLayout.general,
+                .sampler = u.samplers.linear_clamp,
+            };
+            const writes = [_]vk.WriteDescriptorSet{
+                .{
+                    .dst_set = descriptor_set,
+                    .dst_binding = 0,
+                    .descriptor_count = 1,
+                    .dst_array_element = 0,
+                    .p_texel_buffer_view = undefined,
+                    .descriptor_type = .acceleration_structure_khr,
+                    .p_image_info = undefined,
+                    .p_buffer_info = undefined,
+                    .p_next = &tlas_descriptor_info,
+                },
+                .{
+                    .dst_set = descriptor_set,
+                    .dst_binding = 1,
+                    .descriptor_count = 1,
+                    .dst_array_element = 0,
+                    .descriptor_type = .storage_image,
+                    .p_texel_buffer_view = undefined,
+                    .p_image_info = @ptrCast(&.{image_info}),
+                    .p_buffer_info = undefined,
+                },
+            };
+            u.device.logical_device.updateDescriptorSets(writes.len, &writes, 0, null);
+        }
+        const rt_pipeline_instance = rt.pipeline.pipeline.instance(sets[0..]);
         _ = rt_pipeline_instance;
 
         {
@@ -824,10 +935,10 @@ pub fn main() !void {
                     }
                     // rendering
                     if (!done) {
-                        frame.cmd.bindPipeline(.ray_tracing_khr, pipeline.pipeline.pipeline);
+                        frame.cmd.bindPipeline(.ray_tracing_khr, rt.pipeline.pipeline.handle);
                         frame.cmd.bindDescriptorSets(
                             .ray_tracing_khr,
-                            pipeline.pipeline.layout,
+                            rt.pipeline.pipeline.layout,
                             0,
                             1,
                             @ptrCast(&descriptor_set),
@@ -845,7 +956,7 @@ pub fn main() !void {
                             pc2.frame = accumilation_frame_counter;
                         }
                         frame.cmd.pushConstants(
-                            pipeline.pipeline.layout,
+                            rt.pipeline.pipeline.layout,
                             .{
                                 .raygen_bit_khr = true,
                                 .miss_bit_khr = true,
@@ -856,10 +967,10 @@ pub fn main() !void {
                             &pc2,
                         );
                         frame.cmd.traceRaysKHR(
-                            &pipeline.sbt.raygen_region,
-                            &pipeline.sbt.miss_region,
-                            &pipeline.sbt.closest_hit_region,
-                            &pipeline.sbt.callable_region,
+                            &rt.pipeline.sbt.raygen_region,
+                            &rt.pipeline.sbt.miss_region,
+                            &rt.pipeline.sbt.closest_hit_region,
+                            &rt.pipeline.sbt.callable_region,
                             @intCast(tiles[0].len),
                             @intCast(tiles[1].len),
                             1,

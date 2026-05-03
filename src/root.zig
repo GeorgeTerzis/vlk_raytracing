@@ -146,7 +146,8 @@ pub const vlk_instance = struct {
         };
 
         const extensions = try sdl.vulkan.getInstanceExtensions();
-        const enable_validation = false;
+        const enable_validation = builtin.mode == .Debug;
+
         const validation_feature_enables = [_]vk.ValidationFeatureEnableEXT{
             .best_practices_ext,
             .synchronization_validation_ext,
@@ -164,7 +165,7 @@ pub const vlk_instance = struct {
             &[_][*:0]const u8{"VK_LAYER_KHRONOS_validation"}
         else
             &[_][*:0]const u8{};
-        // if (builtin.mode == .Debug) try vki_check_validation_layer_support(allocator, vkb);
+
         const create_info: vk.InstanceCreateInfo = .{
             .p_application_info = &app_info,
 
@@ -1192,33 +1193,13 @@ pub const vlk_descriptor_pool = struct {
     }
 };
 
-pub const vlk_descriptor_set_layout = struct {
-    handle: vk.DescriptorSetLayout,
+// pub const vlk_descriptor_set_layout = struct {
+//     handle: vk.DescriptorSetLayout,
 
-    pub fn init(
-        device: *vlk_device,
-        bindings: []const vk.DescriptorSetLayoutBinding,
-        binding_flags: []const vk.DescriptorBindingFlags,
-    ) !vlk_descriptor_set_layout {
-        const flags_info = vk.DescriptorSetLayoutBindingFlagsCreateInfo{
-            .binding_count = @intCast(binding_flags.len),
-            .p_binding_flags = binding_flags.ptr,
-        };
-
-        const handle = try device.logical_device.createDescriptorSetLayout(&.{
-            .flags = .{ .update_after_bind_pool_bit = true },
-            .binding_count = @intCast(bindings.len),
-            .p_bindings = bindings.ptr,
-            .p_next = &flags_info,
-        }, null);
-
-        return .{ .handle = handle };
-    }
-
-    pub fn deinit(self: @This(), device: vk.DeviceProxy) void {
-        device.destroyDescriptorSetLayout(self.handle, null);
-    }
-};
+//     pub fn deinit(self: @This(), device: vk.DeviceProxy) void {
+//         device.destroyDescriptorSetLayout(self.handle, null);
+//     }
+// };
 
 pub const vlk_pc_layout = struct {
     range: vk.PushConstantRange,
@@ -1235,15 +1216,18 @@ pub const vlk_pc_layout = struct {
 };
 
 pub const vlk_shader_module = struct {
-    module: vk.ShaderModule,
-    stage: vk.ShaderStageFlags,
-    entry: [*:0]const u8,
+    // module: vk.ShaderModule,
+    // stage: vk.ShaderStageFlags,
+    // entry: [*:0]const u8,
+    info: vk.PipelineShaderStageCreateInfo,
 
+    // add specialisation info,
+    // creation flags
     pub fn init(
         device: *vlk_device,
-        spirv: []const u8,
         stage: vk.ShaderStageFlags,
-        entry: ?[*:0]const u8,
+        entry: [*:0]const u8,
+        spirv: []const u8,
     ) !vlk_shader_module {
         const module = try device.logical_device.createShaderModule(&.{
             .code_size = spirv.len,
@@ -1252,28 +1236,48 @@ pub const vlk_shader_module = struct {
         errdefer device.logical_device.destroyShaderModule(module, null);
 
         return .{
-            .module = module,
-            .stage = stage,
-            .entry = if (entry) |e| e else "main",
+            .info = .{
+                .stage = stage,
+                .module = module,
+                .p_name = entry,
+            },
         };
-    }
-    pub fn deinit(self: @This(), device: *vlk_device) void {
-        device.logical_device.destroyShaderModule(self.module, null);
     }
 
-    pub fn info(self: @This()) vk.PipelineShaderStageCreateInfo {
-        return .{
-            .stage = self.stage,
-            .module = self.module,
-            .p_name = self.entry,
-        };
+    pub fn deinit(self: @This(), device: *vlk_device) void {
+        device.logical_device.destroyShaderModule(self.info.module, null);
     }
+
+    // pub fn info(self: @This()) vk.PipelineShaderStageCreateInfo {
+    //     return .{
+    //         .stage = self.stage,
+    //         .module = self.module,
+    //         .p_name = self.entry,
+    //     };
+    // }
 };
 
 pub const vlk_pipeline = struct {
-    pipeline: vk.Pipeline,
+    handle: vk.Pipeline,
     layout: vk.PipelineLayout,
-    descriptor_set_layout: vlk_descriptor_set_layout,
+    descriptor_set_layouts: []const vk.DescriptorSetLayout,
+
+    fn create_layout_info(
+        push_constants: []const vk.PushConstantRange,
+        descriptor_sets: []const vk.DescriptorSetLayout,
+    ) vk.PipelineLayoutCreateInfo {
+        return vk.PipelineLayoutCreateInfo{
+            .push_constant_range_count = @intCast(push_constants.len),
+            .p_push_constant_ranges = push_constants.ptr,
+
+            .set_layout_count = @intCast(descriptor_sets.len),
+            .p_set_layouts = descriptor_sets.ptr,
+        };
+    }
+
+    fn create_layout(device: *vlk_device, info: *const vk.PipelineLayoutCreateInfo) !vk.PipelineLayout {
+        return device.logical_device.createPipelineLayout(info, null);
+    }
 
     pub fn instance(self: *@This(), sets: ?[]vk.DescriptorSet) vlk_pipeline_instance {
         var inst = vlk_pipeline_instance{
@@ -1289,10 +1293,14 @@ pub const vlk_pipeline = struct {
         return inst;
     }
 
-    pub fn deinit(self: @This(), device: *vlk_device) void {
-        device.logical_device.destroyPipeline(self.pipeline, null);
+    pub fn deinit(self: @This(), allocator: std.mem.Allocator, device: *vlk_device) void {
+        device.logical_device.destroyPipeline(self.handle, null);
         device.logical_device.destroyPipelineLayout(self.layout, null);
-        self.descriptor_set_layout.deinit(device.logical_device);
+
+        for (self.descriptor_set_layouts) |layout| {
+            device.logical_device.destroyDescriptorSetLayout(layout, null);
+        }
+        allocator.free(self.descriptor_set_layouts);
     }
 };
 
@@ -1302,11 +1310,11 @@ pub const vlk_pipeline_instance = struct {
     descriptor_set_count: u32,
 
     pub fn cmd_bind_compute(self: @This(), cmd: vk.CommandBufferProxy) void {
-        cmd.bindPipeline(.compute, self.pipeline.pipeline);
+        cmd.bindPipeline(.compute, self.pipeline.handle);
     }
 
     pub fn cmd_bind_graphics(self: @This(), cmd: vk.CommandBufferProxy) void {
-        cmd.bindPipeline(.graphics, self.pipeline.pipeline);
+        cmd.bindPipeline(.graphics, self.pipeline.handle);
     }
 
     pub fn cmd_bind_descriptor_sets_compute(self: @This(), cmd: vk.CommandBufferProxy) void {
@@ -1353,7 +1361,7 @@ pub fn vlk_get_raytracing_properties(vki: *vlk_instance, device: *vlk_device) vk
     return rt_props;
 }
 
-pub fn vlk_make_raytracing_pipeline_info(
+pub fn vlk_make_rt_pipeline_info(
     stages: []const vk.PipelineShaderStageCreateInfo,
     groups: []const vk.RayTracingShaderGroupCreateInfoKHR,
     max_recursion_depth: u32,
@@ -1445,6 +1453,18 @@ const Slider = struct {
         self.index += count;
         return result;
     }
+
+    pub fn get_aligned(self: *@This(), alignment: usize, count: usize) ![]u8 {
+        const aligned_index = std.mem.alignForward(usize, self.index, alignment);
+
+        if (aligned_index + count > self.slice.len)
+            return error.OutOfPoolMemory;
+
+        const result = self.slice[aligned_index .. aligned_index + count];
+
+        self.index = aligned_index + count;
+        return result;
+    }
 };
 
 const SbtLayout = struct {
@@ -1453,21 +1473,31 @@ const SbtLayout = struct {
     count: usize,
 
     pub fn init(handle_alignment: usize, handle_size: usize, count: usize) SbtLayout {
+        const stride = std.mem.alignForward(usize, handle_size, handle_alignment);
         return .{
             .offset = 0,
-            .size = std.mem.alignForward(usize, count * handle_size, handle_alignment),
+            .size = count * stride,
             .count = count,
         };
     }
 
     pub fn next(self: @This(), handle_alignment: usize, handle_size: usize, count: usize, base_alignment: usize) SbtLayout {
+        const stride = std.mem.alignForward(usize, handle_size, handle_alignment);
         return .{
             .offset = std.mem.alignForward(usize, self.offset + self.size, base_alignment),
-            .size = std.mem.alignForward(usize, count * handle_size, handle_alignment),
+            .size = count * stride,
             .count = count,
         };
     }
 };
+
+pub fn push_constant_range(comptime T: type, stage_flags: vk.ShaderStageFlags, offset: usize) vk.PushConstantRange {
+    return .{
+        .offset = @intCast(offset),
+        .size = @sizeOf(T),
+        .stage_flags = stage_flags,
+    };
+}
 
 pub const vlk_raytracing_pipeline = struct {
     pub const shader_binding_table = struct {
@@ -1558,37 +1588,25 @@ pub const vlk_raytracing_pipeline = struct {
 
             const staging = try vlk_upload_buffer(vma, buffer_size);
             defer staging.deinit(vma);
-            const mapping_ptr: [*]u8 = @ptrCast(try staging.map(vma));
-            const mapping: []u8 = mapping_ptr[0..buffer_size];
-            {
-                //build staging buffer
-                // unfortuantly we can't really do the _with_data since we have some alignment rules to adhere to
+            const staging_mapping_ptr: [*]u8 = @ptrCast(try staging.map(vma));
+            const staging_mapping: []u8 = staging_mapping_ptr[0..buffer_size];
 
+            const sbt_layouts = [_]SbtLayout{
+                raygen, miss, closest_hit, callable,
+            };
+
+            {
                 {
+                    var staging_mapping_slider = Slider{ .slice = staging_mapping, .index = 0 };
                     var handle_slider = Slider{ .slice = handles, .index = 0 };
-                    for (0..raygen.count) |i| {
-                        @memcpy(
-                            mapping[raygen.offset + i * handle_size ..][0..handle_size],
-                            try handle_slider.get(handle_size),
-                        );
-                    }
-                    for (0..miss.count) |i| {
-                        @memcpy(
-                            mapping[miss.offset + i * handle_size ..][0..handle_size],
-                            try handle_slider.get(handle_size),
-                        );
-                    }
-                    for (0..closest_hit.count) |i| {
-                        @memcpy(
-                            mapping[closest_hit.offset + i * handle_size ..][0..handle_size],
-                            try handle_slider.get(handle_size),
-                        );
-                    }
-                    for (0..callable.count) |i| {
-                        @memcpy(
-                            mapping[callable.offset + i * handle_size ..][0..handle_size],
-                            try handle_slider.get(handle_size),
-                        );
+                    for (sbt_layouts) |layout| {
+                        for (0..layout.count) |i| {
+                            _ = i;
+                            @memcpy(
+                                try staging_mapping_slider.get_aligned(handle_alignment, handle_size),
+                                try handle_slider.get(handle_size),
+                            );
+                        }
                     }
                 }
 
@@ -1642,35 +1660,26 @@ pub const vlk_raytracing_pipeline = struct {
     sbt: shader_binding_table,
 
     pub fn init(
-        comptime PushConstant: type,
         allocator: std.mem.Allocator,
+        u: *vlk_unit,
         rt_props: *const vk.PhysicalDeviceRayTracingPipelinePropertiesKHR,
-        vma: *vlk_vma,
-        device: *vlk_device,
+        pc_ranges: []const vk.PushConstantRange,
+        sets: []const []const vk.DescriptorSetLayoutBinding,
+        stages: []const vk.PipelineShaderStageCreateInfo,
+        groups: []const vk.RayTracingShaderGroupCreateInfoKHR,
         gp: ImediateSubmit,
-        shader_modules: []const vlk_shader_module,
     ) !vlk_raytracing_pipeline {
-        const stages = [_]vk.PipelineShaderStageCreateInfo{
-            shader_modules[0].info(),
-            shader_modules[1].info(),
-            shader_modules[2].info(),
-        };
+        var descriptor_set_layouts = try allocator.alloc(vk.DescriptorSetLayout, sets.len);
+        for (0.., sets) |i, set| {
+            const layout = try vlk_create_set_layout(&u.device, set);
+            descriptor_set_layouts[i] = layout;
+        }
 
-        //ray tracing specific dependant on the stages
-        // groups can be used to make shader combinations
-        // for example triangle_hit + any hit
-        // what you can combine is determined by the vulkan spec
-        // https://docs.vulkan.org/refpages/latest/refpages/source/VkRayTracingShaderGroupCreateInfoKHR.html
-        // https://docs.vulkan.org/refpages/latest/refpages/source/VkRayTracingPipelineCreateInfoKHR.html
-        const groups = [_]vk.RayTracingShaderGroupCreateInfoKHR{
-            //raygen
-            rt_group_info.general(0),
-            //miss
-            rt_group_info.general(1),
-            //hit
-            rt_group_info.triangles_hit(2),
-        };
-        //do not touch these for now
+        //this seems like a more general practice
+        const pipeline_layout_info = vlk_pipeline.create_layout_info(pc_ranges, descriptor_set_layouts);
+        const layout = try vlk_pipeline.create_layout(&u.device, &pipeline_layout_info);
+
+        //
         var raygen_count: usize = 0;
         var miss_count: usize = 0;
         var closest_hit_count: usize = 0;
@@ -1690,83 +1699,44 @@ pub const vlk_raytracing_pipeline = struct {
             }
         }
 
-        //generic
-        // push constants
-        // also derived form the shader idealy
-        const push_constants = [_]vk.PushConstantRange{
-            .{
-                .offset = 0,
-                .size = @sizeOf(PushConstant),
-                .stage_flags = .{
-                    .raygen_bit_khr = true,
-                    .miss_bit_khr = true,
-                    .closest_hit_bit_khr = true,
-                },
-            },
-        };
-
-        //from shader but every shader will have this
-        // set 0 derived from the shader
-        const set0_layout = try set_create_layout(device, &[_]vk.DescriptorSetLayoutBinding{
-            .{
-                .binding = 0,
-                .descriptor_type = .acceleration_structure_khr,
-                .descriptor_count = 1,
-                .stage_flags = .{ .raygen_bit_khr = true },
-            },
-            .{
-                .binding = 1,
-                .descriptor_type = .storage_image,
-                .descriptor_count = 1,
-                .stage_flags = .{ .raygen_bit_khr = true },
-            },
-        });
-
-        const descriptor_sets = [_]vk.DescriptorSetLayout{
-            set0_layout,
-        };
-
-        //generic
-        const pipeline_layout_info = vlk_pipeline_layout_create_info(&push_constants, &descriptor_sets);
-        //generic
-        const layout = try device.logical_device.createPipelineLayout(&pipeline_layout_info, null);
-
-        //raytracing specific
-        const pipeline_info = [_]vk.RayTracingPipelineCreateInfoKHR{
-            vlk_make_raytracing_pipeline_info(
-                &stages,
-                &groups,
+        const rt_pipeline_info = [_]vk.RayTracingPipelineCreateInfoKHR{
+            vlk_make_rt_pipeline_info(
+                stages,
+                groups,
                 rt_props.max_ray_recursion_depth,
                 layout,
             ),
         };
 
         var pipelines = [_]vk.Pipeline{.null_handle};
+        const pipeline_result = try u.device.logical_device.createRayTracingPipelinesKHR(
+            .null_handle,
+            .null_handle,
 
-        const pipeline_cache: vk.PipelineCache = .null_handle;
-        const defered_operation: vk.DeferredOperationKHR = .null_handle;
-
-        const pipeline_result = try device.logical_device.createRayTracingPipelinesKHR(
-            defered_operation,
-            pipeline_cache,
-
-            pipeline_info.len,
-            &pipeline_info,
+            rt_pipeline_info.len,
+            &rt_pipeline_info,
 
             null,
             &pipelines,
         );
         _ = pipeline_result;
 
+        //wait for the above to be done
+        // in case we use defered operations
+        const pipeline = vlk_pipeline{
+            .handle = pipelines[0],
+            .descriptor_set_layouts = descriptor_set_layouts,
+            .layout = layout,
+        };
+
         //after pipeline creation
-        // raytracing specific
         const sbt = try shader_binding_table.init(
             allocator,
-            vma,
-            device,
-            pipelines[0],
+            &u.vma,
+            &u.device,
+            pipeline.handle,
             rt_props,
-            pipeline_info[0],
+            rt_pipeline_info[0],
 
             raygen_count,
             miss_count,
@@ -1777,19 +1747,14 @@ pub const vlk_raytracing_pipeline = struct {
         );
 
         return .{
-            .pipeline = .{
-                .pipeline = pipelines[0],
-                .descriptor_set_layout = .{
-                    .handle = set0_layout,
-                },
-                .layout = layout,
-            },
+            .pipeline = pipeline,
             .sbt = sbt,
         };
     }
-    pub fn deinit(self: @This(), vma: *vlk_vma, device: *vlk_device) void {
+
+    pub fn deinit(self: @This(), allocator: std.mem.Allocator, vma: *vlk_vma, device: *vlk_device) void {
         self.sbt.deinit(vma);
-        self.pipeline.deinit(device);
+        self.pipeline.deinit(allocator, device);
     }
 };
 
@@ -2682,15 +2647,15 @@ pub const TileElm = struct {
     }
 };
 
-pub fn set_create_info(set: []const vk.DescriptorSetLayoutBinding) vk.DescriptorSetLayoutCreateInfo {
+pub fn create_set_info(set: []const vk.DescriptorSetLayoutBinding) vk.DescriptorSetLayoutCreateInfo {
     return .{
         .binding_count = @intCast(set.len),
         .p_bindings = set.ptr,
     };
 }
 
-pub fn set_create_layout(device: *vlk_device, set: []const vk.DescriptorSetLayoutBinding) !vk.DescriptorSetLayout {
-    const infos = set_create_info(set); // maybe separte this?
+pub fn vlk_create_set_layout(device: *vlk_device, set: []const vk.DescriptorSetLayoutBinding) !vk.DescriptorSetLayout {
+    const infos = create_set_info(set);
     return try device.logical_device.createDescriptorSetLayout(&infos, null);
 }
 
@@ -2712,4 +2677,26 @@ pub fn fps_to_ms(fps: u32) f64 {
 pub fn ms_to_fps(ms: i64) f64 {
     if (ms == 0) return 0.0;
     return 1000.0 / @as(f64, @floatFromInt(ms));
+}
+
+pub fn FlagBuilder(comptime FlagType: type) type {
+    return struct {
+        const Self = @This();
+        flags: FlagType = .{},
+
+        pub fn begin(comptime name: []const u8) Self {
+            var f = Self{};
+            @field(f.flags, name) = true;
+            return f;
+        }
+        pub fn enable(self: Self, comptime name: []const u8) Self {
+            var f = self;
+            @field(f.flags, name) = true;
+            return f;
+        }
+
+        pub fn build(self: Self) FlagType {
+            return self.flags;
+        }
+    };
 }
