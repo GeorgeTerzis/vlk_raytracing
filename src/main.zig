@@ -243,7 +243,17 @@ pub fn main() !void {
     const allocator: std.mem.Allocator = std.heap.c_allocator;
     var key_state = std.mem.zeroes([sdl.c.SDL_SCANCODE_COUNT]bool);
 
-    var conf = blk: {
+    // var settings = blk: {
+    //     const file = try std.fs.cwd().openFile("./settings.zon", .{});
+    //     defer file.close();
+
+    //     const src = try emma.readfile_allocZ(allocator, file);
+    //     const result = try config.parse(allocator, src);
+
+    //     break :blk result;
+    // };
+
+    var scene_config = blk: {
         const file = try std.fs.cwd().openFile("./scene.zon", .{});
         defer file.close();
 
@@ -252,7 +262,8 @@ pub fn main() !void {
 
         break :blk result;
     };
-    defer conf.deinit();
+
+    defer scene_config.deinit();
 
     const width: usize = 1440;
     const height: usize = 1440;
@@ -275,7 +286,7 @@ pub fn main() !void {
         command_buffers.buffers[0],
     );
 
-    const local_geometry_storage = try build_local_geometry(allocator, conf.primitive);
+    const local_geometry_storage = try build_local_geometry(allocator, scene_config.primitive);
     const device_geometry_storage = try build_device_geometry(allocator, &u, local_geometry_storage, is);
 
     defer is.deinit(&u.device);
@@ -293,10 +304,10 @@ pub fn main() !void {
 
     defer materials_storage.deinit(allocator);
 
-    var blas_ranges = try std.ArrayList(emma.blas_geometry_range).initCapacity(allocator, conf.assets.len);
-    var materials = try std.ArrayList(u32).initCapacity(allocator, conf.assets.len);
-    var instance_transforms = try std.ArrayList(vk.TransformMatrixKHR).initCapacity(allocator, conf.assets.len);
-    for (conf.assets) |node| {
+    var blas_ranges = try std.ArrayList(emma.blas_geometry_range).initCapacity(allocator, scene_config.assets.len);
+    var materials = try std.ArrayList(u32).initCapacity(allocator, scene_config.assets.len);
+    var instance_transforms = try std.ArrayList(vk.TransformMatrixKHR).initCapacity(allocator, scene_config.assets.len);
+    for (scene_config.assets) |node| {
         const begin = blas_geometry_storage.len;
         {
             const len = 1;
@@ -561,8 +572,8 @@ pub fn main() !void {
         defer descriptor_pool.deinit(u.device.logical_device);
 
         //create texture
-        const render_texture_width = conf.settings.resolution[0];
-        const render_texture_height = conf.settings.resolution[1];
+        const render_texture_width = scene_config.settings.resolution[0];
+        const render_texture_height = scene_config.settings.resolution[1];
 
         const render_texture = try emma.vlk_image.init(
             &u.vma,
@@ -731,7 +742,7 @@ pub fn main() !void {
             var flush_render_texture: bool = true;
             var accumilation_frame_counter: u32 = 0;
 
-            const tile_pixel_strides = conf.settings.render_tile;
+            const tile_pixel_strides = scene_config.settings.render_tile;
             var tiles = [2]emma.TileElm{
                 emma.TileElm.init(tile_pixel_strides[0], render_texture_width),
                 emma.TileElm.init(tile_pixel_strides[1], render_texture_height),

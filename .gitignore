@@ -8,7 +8,7 @@ src/shaders/hwrt_backup
 src/shaders/noise
 
 *.spv
-
+*.obj
 
 profiling/
 captures/
