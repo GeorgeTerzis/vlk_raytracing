@@ -45,40 +45,64 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .registry = vkxml,
     });
+
     const sdl3 = b.dependency("sdl3", .{
         .target = target,
         .optimize = optimize,
-        .callbacks = false,
     });
     // const zigimg = b.dependency("zigimg", .{
     //     .target = target,
     //     .optimize = optimize,
     // });
-    const obj_mod = b.dependency("obj", .{ .target = target, .optimize = optimize }).module("obj");
+    const obj = b.dependency("obj", .{
+        .target = target,
+        .optimize = optimize,
+    });
 
-    exe.addCSourceFile(.{
+    const translate_c = b.addTranslateC(.{
+        .root_source_file = b.path("src/c.h"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+
+    const c_module = translate_c.createModule();
+    exe.root_module.addImport("emma", emma);
+    exe.root_module.linkSystemLibrary("vulkan", .{});
+    exe.root_module.linkSystemLibrary("sdl3", .{});
+    exe.root_module.linkSystemLibrary("z", .{});
+    exe.root_module.link_libcpp = true;
+
+    exe.root_module.addCSourceFile(.{
         .file = b.path("vk_deps/tinyexr/tinyexr.cc"),
     });
-    exe.addCSourceFile(.{
+    exe.root_module.addCSourceFile(.{
         .file = b.path("vk_deps/tinyexr/miniz.c"),
     });
-    exe.addCSourceFile(.{
+    exe.root_module.addCSourceFile(.{
         .file = b.path("vk_deps/cxx_vma/vma.cpp"),
     });
-    exe.linkLibCpp();
+
+    // // b.addCSourceFile(.{
+    // //     .file = b.path("vk_deps/tinyexr/tinyexr.cc"),
+    // });
+    // exe.addCSourceFile(.{
+    //     .file = b.path("vk_deps/tinyexr/miniz.c"),
+    // });
+    // exe.addCSourceFile(.{
+    //     .file = b.path("vk_deps/cxx_vma/vma.cpp"),
+    // });
+    // exe.linkLibCpp();
 
     // exe.root_module.addImport("zigimg", zigimg.module("zigimg"));
-    exe.root_module.addImport("emma", emma);
-    exe.linkSystemLibrary("vulkan");
-    exe.linkSystemLibrary("sdl3");
-    exe.linkSystemLibrary("z");
 
+    emma.addImport("c_libs", c_module);
     emma.addImport("mth", mth);
-    emma.addImport("obj", obj_mod);
+    emma.addImport("obj", obj.module("obj"));
     emma.addImport("vulkan", vulkan.module("vulkan-zig"));
     emma.addImport("sdl3", sdl3.module("sdl3"));
-    emma.addIncludePath(b.path("vk_deps/tinyexr"));
-    emma.addIncludePath(b.path("vk_deps/cxx_vma"));
+    // emma.addIncludePath(b.path("vk_deps/tinyexr"));
+    // emma.addIncludePath(b.path("vk_deps/cxx_vma"));
 
     b.installArtifact(exe);
     const run_exe = b.addRunArtifact(exe);

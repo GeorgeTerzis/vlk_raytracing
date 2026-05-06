@@ -46,11 +46,13 @@ pub const Config = struct {
     primitive: []Primitive,
     assets: []Asset,
 
-    primitive_map: std.StringArrayHashMap(u32),
-    asset_map: std.StringArrayHashMap(u32),
+    primitive_map: std.array_hash_map.String(u32),
+    asset_map: std.array_hash_map.String(u32),
 
+    //leaky
     pub fn deinit(self: *Config) void {
-        self.primitive_map.deinit();
+        const allocator = self.arena.allocator();
+        self.primitive_map.deinit(allocator);
         self.arena.deinit();
     }
 };
@@ -63,23 +65,22 @@ pub fn parse(allocator: std.mem.Allocator, src: [:0]const u8) !Config {
     errdefer arena.deinit();
 
     const alloc = arena.allocator();
-    const serial = try std.zon.parse.fromSlice(SerialConfig, alloc, src, null, .{});
+    const serial = try std.zon.parse.fromSliceAlloc(SerialConfig, alloc, src, null, .{});
 
     return build(alloc, arena, serial);
 }
 
 fn build(alloc: std.mem.Allocator, arena: *std.heap.ArenaAllocator, serial: SerialConfig) !Config {
-    var primitive_map = std.StringArrayHashMap(u32).init(alloc);
-    errdefer primitive_map.deinit();
-
-    var asset_map = std.StringArrayHashMap(u32).init(alloc);
-    errdefer asset_map.deinit();
+    var primitive_map = std.array_hash_map.String(u32).empty;
+    // errdefer primitive_map.deinit();
+    var asset_map = std.array_hash_map.String(u32).empty;
+    // errdefer asset_map.deinit();
 
     for (serial.scene.primitive, 0..) |elm, i| {
-        try primitive_map.put(elm.name, @intCast(i));
+        try primitive_map.put(alloc, elm.name, @intCast(i));
     }
     for (serial.scene.assets, 0..) |elm, i| {
-        try asset_map.put(elm.name, @intCast(i));
+        try asset_map.put(alloc, elm.name, @intCast(i));
     }
 
     const assets = try alloc.alloc(Asset, serial.scene.assets.len);

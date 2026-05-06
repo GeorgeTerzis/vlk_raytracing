@@ -1,10 +1,10 @@
 const std = @import("std");
 
-pub fn readfile_alloc(allocator: std.mem.Allocator, file: std.fs.File) ![]const u8 {
+pub fn readfile_alloc(allocator: std.mem.Allocator, io: std.Io, file: std.Io.File) ![]const u8 {
     var file_buffer: [1024]u8 = undefined;
-    var reader = file.reader(&file_buffer);
+    var reader = file.reader(io, &file_buffer);
 
-    const stat = try file.stat();
+    const stat = try file.stat(io);
     const size = stat.size;
     const contents = try reader.interface.readAlloc(allocator, size);
 
@@ -17,12 +17,13 @@ pub fn readfile_alloc(allocator: std.mem.Allocator, file: std.fs.File) ![]const 
 
 pub fn readfile_allocZ(
     allocator: std.mem.Allocator,
-    file: std.fs.File,
+    io: std.Io,
+    file: std.Io.File,
 ) ![:0]const u8 {
     var file_buffer: [1024]u8 = undefined;
-    var reader = file.reader(&file_buffer);
+    var reader = file.reader(io, &file_buffer);
 
-    const stat = try file.stat();
+    const stat = try file.stat(io);
     const size = stat.size;
 
     var contents = try allocator.alloc(u8, size + 1);

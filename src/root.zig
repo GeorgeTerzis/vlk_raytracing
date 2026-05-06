@@ -1,9 +1,9 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-const c_libs = @import("c_libs.zig");
-pub const c_vma = c_libs.c_vma;
-pub const tinyexr = c_libs.tinyexr;
+pub const c_libs = @import("c_libs");
+// pub const c_libs = c_libs.c_libs;
+// pub const tinyexr = c_libs.tinyexr;
 
 pub const read = @import("readfile.zig");
 pub const readfile_alloc = read.readfile_alloc;
@@ -35,8 +35,8 @@ const required_device_extensions: []const [*:0]const u8 = &.{
     vk.extensions.khr_ray_tracing_pipeline.name,
     vk.extensions.khr_acceleration_structure.name,
     vk.extensions.khr_deferred_host_operations.name,
-        // vk.extensions.ext_mesh_shader.name,
-        // vk.extensions.khr_compute_shader_derivatives.name,
+    // vk.extensions.ext_mesh_shader.name,
+    // vk.extensions.khr_compute_shader_derivatives.name,
 };
 const required_features = .{
     vk.PhysicalDeviceAccelerationStructureFeaturesKHR{
@@ -722,7 +722,6 @@ pub const vlk_frame = struct {
             .level = .primary,
             .command_buffer_count = 1,
         }, @ptrCast(&handle));
-        errdefer device.logical_device.freeCommandBuffers(pool, 1, @ptrCast(&handle));
 
         const fence = try vlk_fence.init(device, .{ .signaled_bit = true });
 
@@ -911,19 +910,19 @@ pub const vlk_unit = struct {
 };
 
 pub const vlk_vma = struct {
-    allocator: c_vma.VmaAllocator,
+    allocator: c_libs.VmaAllocator,
 
     pub fn init(device: *vlk_device, vki: *vlk_instance) !vlk_vma {
-        const vma_info = c_vma.VmaAllocatorCreateInfo{
+        const vma_info = c_libs.VmaAllocatorCreateInfo{
             .physicalDevice = @ptrFromInt(@intFromEnum(device.physical_device)),
             .device = @ptrFromInt(@intFromEnum(device.logical_device.handle)),
             .instance = @ptrFromInt(@intFromEnum(vki.instance.handle)),
-            .flags = c_vma.VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT,
+            .flags = c_libs.VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT,
         };
 
-        var vma: c_vma.VmaAllocator = undefined;
-        const result = c_vma.vmaCreateAllocator(&vma_info, &vma);
-        if (result != c_vma.VK_SUCCESS) {
+        var vma: c_libs.VmaAllocator = undefined;
+        const result = c_libs.vmaCreateAllocator(&vma_info, &vma);
+        if (result != c_libs.VK_SUCCESS) {
             return error.VmaInitFailed;
         }
 
@@ -931,33 +930,33 @@ pub const vlk_vma = struct {
     }
 
     pub fn deinit(self: @This()) void {
-        c_vma.vmaDestroyAllocator(self.allocator);
+        c_libs.vmaDestroyAllocator(self.allocator);
     }
 
     pub fn alloc_buffer_aligned(
         self: @This(),
         size: vk.DeviceSize,
-        usage: c_vma.VkBufferUsageFlags,
-        mem_usage: c_vma.VmaMemoryUsage,
-        alloc_flags: c_vma.VmaAllocationCreateFlags,
+        usage: c_libs.VkBufferUsageFlags,
+        mem_usage: c_libs.VmaMemoryUsage,
+        alloc_flags: c_libs.VmaAllocationCreateFlags,
         alignment: u64,
-    ) !struct { buffer: c_vma.VkBuffer, allocation: c_vma.VmaAllocation, allocation_info: c_vma.VmaAllocationInfo } {
-        const buffer_info = c_vma.VkBufferCreateInfo{
-            .sType = c_vma.VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+    ) !struct { buffer: c_libs.VkBuffer, allocation: c_libs.VmaAllocation, allocation_info: c_libs.VmaAllocationInfo } {
+        const buffer_info = c_libs.VkBufferCreateInfo{
+            .sType = c_libs.VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
             .size = size,
             .usage = usage,
-            .sharingMode = c_vma.VK_SHARING_MODE_EXCLUSIVE,
+            .sharingMode = c_libs.VK_SHARING_MODE_EXCLUSIVE,
         };
-        const alloc_create_info = c_vma.VmaAllocationCreateInfo{
+        const alloc_create_info = c_libs.VmaAllocationCreateInfo{
             .usage = mem_usage,
             .flags = alloc_flags,
         };
 
-        var buffer: c_vma.VkBuffer = undefined;
-        var allocation: c_vma.VmaAllocation = undefined;
-        var allocation_info: c_vma.VmaAllocationInfo = undefined;
+        var buffer: c_libs.VkBuffer = undefined;
+        var allocation: c_libs.VmaAllocation = undefined;
+        var allocation_info: c_libs.VmaAllocationInfo = undefined;
 
-        const result = c_vma.vmaCreateBufferWithAlignment(
+        const result = c_libs.vmaCreateBufferWithAlignment(
             self.allocator,
             &buffer_info,
             &alloc_create_info,
@@ -966,7 +965,7 @@ pub const vlk_vma = struct {
             &allocation,
             &allocation_info,
         );
-        if (result != c_vma.VK_SUCCESS) return error.AllocationFailed;
+        if (result != c_libs.VK_SUCCESS) return error.AllocationFailed;
         return .{
             .buffer = buffer,
             .allocation = allocation,
@@ -976,27 +975,27 @@ pub const vlk_vma = struct {
     pub fn alloc_buffer(
         self: @This(),
         size: vk.DeviceSize,
-        usage: c_vma.VkBufferUsageFlags,
-        mem_usage: c_vma.VmaMemoryUsage,
-        alloc_flags: c_vma.VmaAllocationCreateFlags,
-    ) !struct { buffer: c_vma.VkBuffer, allocation: c_vma.VmaAllocation, allocation_info: c_vma.VmaAllocationInfo } {
-        const buffer_info = c_vma.VkBufferCreateInfo{
-            .sType = c_vma.VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        usage: c_libs.VkBufferUsageFlags,
+        mem_usage: c_libs.VmaMemoryUsage,
+        alloc_flags: c_libs.VmaAllocationCreateFlags,
+    ) !struct { buffer: c_libs.VkBuffer, allocation: c_libs.VmaAllocation, allocation_info: c_libs.VmaAllocationInfo } {
+        const buffer_info = c_libs.VkBufferCreateInfo{
+            .sType = c_libs.VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
             .size = size,
             .usage = usage,
-            .sharingMode = c_vma.VK_SHARING_MODE_EXCLUSIVE,
+            .sharingMode = c_libs.VK_SHARING_MODE_EXCLUSIVE,
         };
 
-        const alloc_create_info = c_vma.VmaAllocationCreateInfo{
+        const alloc_create_info = c_libs.VmaAllocationCreateInfo{
             .usage = mem_usage,
             .flags = alloc_flags,
         };
 
-        var buffer: c_vma.VkBuffer = undefined;
-        var allocation: c_vma.VmaAllocation = undefined;
-        var allocation_info: c_vma.VmaAllocationInfo = undefined;
+        var buffer: c_libs.VkBuffer = undefined;
+        var allocation: c_libs.VmaAllocation = undefined;
+        var allocation_info: c_libs.VmaAllocationInfo = undefined;
 
-        const result = c_vma.vmaCreateBuffer(
+        const result = c_libs.vmaCreateBuffer(
             self.allocator,
             &buffer_info,
             &alloc_create_info,
@@ -1004,7 +1003,7 @@ pub const vlk_vma = struct {
             &allocation,
             &allocation_info,
         );
-        if (result != c_vma.VK_SUCCESS) return error.AllocationFailed;
+        if (result != c_libs.VK_SUCCESS) return error.AllocationFailed;
         return .{
             .buffer = buffer,
             .allocation = allocation,
@@ -1027,17 +1026,17 @@ pub const buffer_usage = struct {
     acceleration_structure_input: bool = false,
     acceleration_structure_storage: bool = false,
 
-    pub fn bits(self: @This()) c_vma.VkBufferUsageFlags {
-        var flags: c_vma.VkBufferUsageFlags = 0;
-        if (self.vertex) flags |= c_vma.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
-        if (self.index) flags |= c_vma.VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
-        if (self.storage) flags |= c_vma.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-        if (self.indirect) flags |= c_vma.VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
-        if (self.transfer_src) flags |= c_vma.VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-        if (self.transfer_dst) flags |= c_vma.VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-        if (self.device_address) flags |= c_vma.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
-        if (self.acceleration_structure_input) flags |= c_vma.VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
-        if (self.acceleration_structure_storage) flags |= c_vma.VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR;
+    pub fn bits(self: @This()) c_libs.VkBufferUsageFlags {
+        var flags: c_libs.VkBufferUsageFlags = 0;
+        if (self.vertex) flags |= c_libs.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+        if (self.index) flags |= c_libs.VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+        if (self.storage) flags |= c_libs.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+        if (self.indirect) flags |= c_libs.VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
+        if (self.transfer_src) flags |= c_libs.VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+        if (self.transfer_dst) flags |= c_libs.VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        if (self.device_address) flags |= c_libs.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+        if (self.acceleration_structure_input) flags |= c_libs.VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
+        if (self.acceleration_structure_storage) flags |= c_libs.VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR;
         return flags;
     }
 };
@@ -1078,16 +1077,16 @@ pub const buffer_usage_presets = struct {
 
 pub const vlk_vma_buffer = struct {
     handle: vk.Buffer,
-    allocation: c_vma.VmaAllocation,
-    info: c_vma.VmaAllocationInfo,
+    allocation: c_libs.VmaAllocation,
+    info: c_libs.VmaAllocationInfo,
     size: usize,
 
     pub fn init_aligned(
         vma_alloc: *vlk_vma,
         size: vk.DeviceSize,
-        usage: c_vma.VkBufferUsageFlags,
-        mem_usage: c_vma.VmaMemoryUsage,
-        alloc_flags: c_vma.VmaAllocationCreateFlags,
+        usage: c_libs.VkBufferUsageFlags,
+        mem_usage: c_libs.VmaMemoryUsage,
+        alloc_flags: c_libs.VmaAllocationCreateFlags,
         alignment: u64,
     ) !vlk_vma_buffer {
         const result = try vma_alloc.alloc_buffer_aligned(size, usage, mem_usage, alloc_flags, alignment);
@@ -1101,9 +1100,9 @@ pub const vlk_vma_buffer = struct {
     pub fn init(
         vma_alloc: *vlk_vma,
         size: vk.DeviceSize,
-        usage: c_vma.VkBufferUsageFlags,
-        mem_usage: c_vma.VmaMemoryUsage,
-        alloc_flags: c_vma.VmaAllocationCreateFlags,
+        usage: c_libs.VkBufferUsageFlags,
+        mem_usage: c_libs.VmaMemoryUsage,
+        alloc_flags: c_libs.VmaAllocationCreateFlags,
     ) !vlk_vma_buffer {
         const result = try vma_alloc.alloc_buffer(size, usage, mem_usage, alloc_flags);
         return .{
@@ -1122,14 +1121,14 @@ pub const vlk_vma_buffer = struct {
     }
 
     pub fn deinit(self: @This(), vma: *vlk_vma) void {
-        c_vma.vmaDestroyBuffer(vma.allocator, @ptrFromInt(@intFromEnum(self.handle)), self.allocation);
+        c_libs.vmaDestroyBuffer(vma.allocator, @ptrFromInt(@intFromEnum(self.handle)), self.allocation);
     }
 
     pub fn map(self: @This(), vma_alloc: *vlk_vma) !*anyopaque {
         if (self.info.pMappedData) |p| return p;
         var mapped: ?*anyopaque = undefined;
-        const result = c_vma.vmaMapMemory(vma_alloc.allocator, self.allocation, &mapped);
-        if (result != c_vma.VK_SUCCESS) return error.MapFailed;
+        const result = c_libs.vmaMapMemory(vma_alloc.allocator, self.allocation, &mapped);
+        if (result != c_libs.VK_SUCCESS) return error.MapFailed;
         return mapped.?;
     }
 
@@ -1137,7 +1136,7 @@ pub const vlk_vma_buffer = struct {
         if (self.info.pMappedData) {
             return;
         } else {
-            c_vma.vmaUnmapMemory(vma.allocator, self.allocation);
+            c_libs.vmaUnmapMemory(vma.allocator, self.allocation);
         }
     }
 
@@ -1166,7 +1165,11 @@ pub const vlk_vma_buffer = struct {
             .dst_offset = 0,
             .size = self.size,
         };
-        cmd.copyBuffer(self.handle, dst.handle, 1, @ptrCast(&region));
+        const regions = [_]vk.BufferCopy{
+            region,
+        };
+
+        cmd.copyBuffer(self.handle, dst.handle, &regions);
     }
 };
 
@@ -1572,10 +1575,10 @@ pub const vlk_raytracing_pipeline = struct {
             const region_buffer = try vlk_vma_buffer.init_aligned(
                 vma,
                 buffer_size,
-                c_vma.VK_BUFFER_USAGE_2_SHADER_BINDING_TABLE_BIT_KHR |
-                    c_vma.VK_BUFFER_USAGE_2_SHADER_DEVICE_ADDRESS_BIT |
-                    c_vma.VK_BUFFER_USAGE_2_TRANSFER_DST_BIT,
-                c_vma.VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
+                c_libs.VK_BUFFER_USAGE_2_SHADER_BINDING_TABLE_BIT_KHR |
+                    c_libs.VK_BUFFER_USAGE_2_SHADER_DEVICE_ADDRESS_BIT |
+                    c_libs.VK_BUFFER_USAGE_2_TRANSFER_DST_BIT,
+                c_libs.VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
                 0,
                 handle_alignment,
             );
@@ -1706,10 +1709,7 @@ pub const vlk_raytracing_pipeline = struct {
         const pipeline_result = try u.device.logical_device.createRayTracingPipelinesKHR(
             .null_handle,
             .null_handle,
-
-            rt_pipeline_info.len,
             &rt_pipeline_info,
-
             null,
             &pipelines,
         );
@@ -1779,11 +1779,11 @@ pub const device_geometry = struct {
         var vertex_buffer = try vlk_vma_buffer.init(
             vma,
             vertex_bytes.len,
-            c_vma.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
-                c_vma.VK_BUFFER_USAGE_2_SHADER_DEVICE_ADDRESS_BIT |
-                c_vma.VK_BUFFER_USAGE_2_TRANSFER_DST_BIT |
-                c_vma.VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR,
-            c_vma.VMA_MEMORY_USAGE_AUTO,
+            c_libs.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
+                c_libs.VK_BUFFER_USAGE_2_SHADER_DEVICE_ADDRESS_BIT |
+                c_libs.VK_BUFFER_USAGE_2_TRANSFER_DST_BIT |
+                c_libs.VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR,
+            c_libs.VMA_MEMORY_USAGE_AUTO,
             0,
         );
         try staging_buffers.append(allocator, try vlk_upload_buffer_with_data(vma, vertex_bytes));
@@ -1792,11 +1792,11 @@ pub const device_geometry = struct {
         var index_buffer = try vlk_vma_buffer.init(
             vma,
             index_bytes.len,
-            c_vma.VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
-                c_vma.VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-                c_vma.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
-                c_vma.VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR,
-            c_vma.VMA_MEMORY_USAGE_AUTO,
+            c_libs.VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
+                c_libs.VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                c_libs.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+                c_libs.VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR,
+            c_libs.VMA_MEMORY_USAGE_AUTO,
             0,
         );
         try staging_buffers.append(allocator, try vlk_upload_buffer_with_data(vma, index_bytes));
@@ -1806,10 +1806,10 @@ pub const device_geometry = struct {
         const normal_buffer = try vlk_vma_buffer.init(
             vma,
             normal_bytes.len,
-            c_vma.VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-                c_vma.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                c_vma.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-            c_vma.VMA_MEMORY_USAGE_AUTO,
+            c_libs.VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                c_libs.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                c_libs.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+            c_libs.VMA_MEMORY_USAGE_AUTO,
             0,
         );
         try staging_buffers.append(allocator, try vlk_upload_buffer_with_data(vma, normal_bytes));
@@ -1819,10 +1819,10 @@ pub const device_geometry = struct {
         const normal_index_buffer = try vlk_vma_buffer.init(
             vma,
             normal_index_bytes.len,
-            c_vma.VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-                c_vma.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                c_vma.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-            c_vma.VMA_MEMORY_USAGE_AUTO,
+            c_libs.VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                c_libs.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                c_libs.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+            c_libs.VMA_MEMORY_USAGE_AUTO,
             0,
         );
         try staging_buffers.append(allocator, try vlk_upload_buffer_with_data(vma, normal_index_bytes));
@@ -1870,7 +1870,8 @@ pub const rt_acceleration_structure = struct {
         geometry: []const vk.AccelerationStructureGeometryKHR,
         geometry_range: []const vk.AccelerationStructureBuildRangeInfoKHR,
         flags: vk.BuildAccelerationStructureFlagsKHR,
-        gp: ImediateSubmit,
+        staging_pool: *std.ArrayList(vlk_vma_buffer),
+        cmd: vk.CommandBufferProxy,
     ) !rt_acceleration_structure {
         var primitive_counts = try std.ArrayList(u32).initCapacity(allocator, geometry_range.len);
         defer primitive_counts.deinit(allocator);
@@ -1903,8 +1904,8 @@ pub const rt_acceleration_structure = struct {
         const as_buffer = try vlk_vma_buffer.init(
             vma,
             build_size.acceleration_structure_size,
-            c_vma.VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR | c_vma.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-            c_vma.VMA_MEMORY_USAGE_AUTO,
+            c_libs.VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR | c_libs.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+            c_libs.VMA_MEMORY_USAGE_AUTO,
             0,
         );
 
@@ -1917,15 +1918,17 @@ pub const rt_acceleration_structure = struct {
             .device_address = 0,
         };
 
-        const scratch = try vlk_vma_buffer.init_aligned(
+        //probably need to pool the create infos and then allocate a scatch buffer that can hold them then all
+
+        try staging_pool.append(allocator, try vlk_vma_buffer.init_aligned(
             vma,
             build_size.build_scratch_size,
-            c_vma.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | c_vma.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-            c_vma.VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
+            c_libs.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | c_libs.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+            c_libs.VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
             0,
             256,
-        );
-        defer scratch.deinit(vma);
+        ));
+        const scratch = staging_pool.getLast();
 
         const as = try device.logical_device.createAccelerationStructureKHR(&as_create_info, null);
 
@@ -1937,9 +1940,9 @@ pub const rt_acceleration_structure = struct {
         {
             const range_ptr = [_][*]const vk.AccelerationStructureBuildRangeInfoKHR{geometry_range.ptr};
 
-            try gp.begin();
-            gp.cmd.buildAccelerationStructuresKHR(1, @ptrCast(&build_info), &range_ptr);
-            try gp.submit_and_wait(device.queue, device.logical_device);
+            // try gp.begin();
+            cmd.buildAccelerationStructuresKHR(@ptrCast(&build_info), &range_ptr);
+            // try gp.submit_and_wait(device.queue, device.logical_device);
         }
 
         return .{
@@ -1966,11 +1969,14 @@ pub const rt_acceleration_structure = struct {
         geometry: []const vk.AccelerationStructureGeometryKHR,
         geometry_range: []const vk.AccelerationStructureBuildRangeInfoKHR,
         flags: vk.BuildAccelerationStructureFlagsKHR,
-        gp: ImediateSubmit,
+        staging_pool: *std.ArrayList(vlk_vma_buffer),
+        cmd: vk.CommandBufferProxy,
     ) !rt_acceleration_structure {
-        return init(allocator, vma, device, .bottom_level_khr, geometry, geometry_range, flags, gp);
+        return init(allocator, vma, device, .bottom_level_khr, geometry, geometry_range, flags, staging_pool, cmd);
     }
 
+    // I want to move to a more defer way of doing stuff
+    // gp is kinda forced here
     pub fn init_tlas(
         allocator: std.mem.Allocator,
         vma: *vlk_vma,
@@ -1978,6 +1984,7 @@ pub const rt_acceleration_structure = struct {
         children: []rt_acceleration_structure,
         transforms: []vk.TransformMatrixKHR,
         flags: vk.BuildAccelerationStructureFlagsKHR,
+        staging_pool: *std.ArrayList(vlk_vma_buffer),
         gp: ImediateSubmit,
     ) !rt_acceleration_structure {
         // build instance array
@@ -2009,10 +2016,10 @@ pub const rt_acceleration_structure = struct {
         const instance_buf = try vlk_vma_buffer.init(
             vma,
             instance_buf_size,
-            c_vma.VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
-                c_vma.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
-                c_vma.VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-            c_vma.VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
+            c_libs.VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
+                c_libs.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+                c_libs.VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            c_libs.VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
             0,
         );
         defer instance_buf.deinit(vma);
@@ -2043,7 +2050,9 @@ pub const rt_acceleration_structure = struct {
             .transform_offset = 0,
         };
 
-        return init(
+        //for now
+        try gp.begin();
+        const result = try init(
             allocator,
             vma,
             device,
@@ -2051,8 +2060,11 @@ pub const rt_acceleration_structure = struct {
             @ptrCast(&geometry),
             @ptrCast(&range),
             flags,
-            gp,
+            staging_pool,
+            gp.cmd,
         );
+        try gp.submit_and_wait(device.queue, device.logical_device);
+        return result;
     }
     pub fn deinit(self: @This(), vma: *vlk_vma, device: *vlk_device) void {
         device.logical_device.destroyAccelerationStructureKHR(self.handle, null);
@@ -2182,8 +2194,9 @@ pub const vlk_fence = struct {
     }
 
     pub fn wait_and_reset(self: @This(), device: vk.DeviceProxy) !void {
-        _ = try device.waitForFences(1, @ptrCast(&self.handle), vk.Bool32.true, std.math.maxInt(u64));
-        try device.resetFences(1, @ptrCast(&self.handle));
+        const f = [_]vk.Fence{self.handle};
+        _ = try device.waitForFences(&f, vk.Bool32.true, std.math.maxInt(u64));
+        try device.resetFences(&f);
     }
 
     pub fn deinit(self: @This(), device: vk.DeviceProxy) void {
@@ -2198,10 +2211,10 @@ fn create_vma_image(
     mip_levels: u32,
     array_layer_count: u32,
     usage: vk.ImageUsageFlags,
-) !struct { allocation: c_vma.VmaAllocation, image: vk.Image } {
-    const vma_image_info = c_vma.VkImageCreateInfo{
-        .sType = c_vma.VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-        .imageType = c_vma.VK_IMAGE_TYPE_2D,
+) !struct { allocation: c_libs.VmaAllocation, image: vk.Image } {
+    const vma_image_info = c_libs.VkImageCreateInfo{
+        .sType = c_libs.VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .imageType = c_libs.VK_IMAGE_TYPE_2D,
         .format = @intCast(@intFromEnum(format)),
         .extent = .{
             .width = extent.width,
@@ -2210,20 +2223,20 @@ fn create_vma_image(
         },
         .mipLevels = mip_levels,
         .arrayLayers = array_layer_count,
-        .samples = c_vma.VK_SAMPLE_COUNT_1_BIT,
-        .tiling = c_vma.VK_IMAGE_TILING_OPTIMAL,
+        .samples = c_libs.VK_SAMPLE_COUNT_1_BIT,
+        .tiling = c_libs.VK_IMAGE_TILING_OPTIMAL,
         .usage = @bitCast(usage),
-        .sharingMode = c_vma.VK_SHARING_MODE_EXCLUSIVE,
-        .initialLayout = c_vma.VK_IMAGE_LAYOUT_UNDEFINED,
+        .sharingMode = c_libs.VK_SHARING_MODE_EXCLUSIVE,
+        .initialLayout = c_libs.VK_IMAGE_LAYOUT_UNDEFINED,
     };
 
-    const alloc_info = c_vma.VmaAllocationCreateInfo{
-        .usage = c_vma.VMA_MEMORY_USAGE_AUTO,
+    const alloc_info = c_libs.VmaAllocationCreateInfo{
+        .usage = c_libs.VMA_MEMORY_USAGE_AUTO,
     };
 
-    var vk_image: c_vma.VkImage = undefined;
-    var allocation: c_vma.VmaAllocation = undefined;
-    const result = c_vma.vmaCreateImage(
+    var vk_image: c_libs.VkImage = undefined;
+    var allocation: c_libs.VmaAllocation = undefined;
+    const result = c_libs.vmaCreateImage(
         vma.allocator,
         &vma_image_info,
         &alloc_info,
@@ -2232,7 +2245,7 @@ fn create_vma_image(
         null,
     );
 
-    if (result != c_vma.VK_SUCCESS) {
+    if (result != c_libs.VK_SUCCESS) {
         return error.ImageCreationFailed;
     }
 
@@ -2272,7 +2285,7 @@ fn create_image_view(
 pub const vlk_image = struct {
     handle: vk.Image,
     view: vk.ImageView,
-    allocation: c_vma.VmaAllocation,
+    allocation: c_libs.VmaAllocation,
     extent: vk.Extent3D,
     format: vk.Format,
     mip_levels: u32,
@@ -2325,7 +2338,7 @@ pub const vlk_image = struct {
     pub fn deinit(self: @This(), pvma: ?*vlk_vma, device: *vlk_device) void {
         device.logical_device.destroyImageView(self.view, null);
         if (pvma) |vma| {
-            c_vma.vmaDestroyImage(
+            c_libs.vmaDestroyImage(
                 vma.allocator,
                 @ptrFromInt(@intFromEnum(self.handle)),
                 self.allocation,
@@ -2438,11 +2451,11 @@ pub fn write_exr_rgba(
         a[i] = pixels[i][3];
     }
 
-    var header = tinyexr.EXRHeader{};
-    tinyexr.InitEXRHeader(&header);
+    var header = c_libs.EXRHeader{};
+    c_libs.InitEXRHeader(&header);
 
-    var image = tinyexr.EXRImage{};
-    tinyexr.InitEXRImage(&image);
+    var image = c_libs.EXRImage{};
+    c_libs.InitEXRImage(&image);
 
     image.num_channels = 4;
     image.width = @intCast(width);
@@ -2457,11 +2470,11 @@ pub fn write_exr_rgba(
     image.images = @ptrCast(&image_ptr);
 
     header.num_channels = 4;
-    var channels = [4]tinyexr.EXRChannelInfo{
-        std.mem.zeroes(tinyexr.EXRChannelInfo),
-        std.mem.zeroes(tinyexr.EXRChannelInfo),
-        std.mem.zeroes(tinyexr.EXRChannelInfo),
-        std.mem.zeroes(tinyexr.EXRChannelInfo),
+    var channels = [4]c_libs.EXRChannelInfo{
+        std.mem.zeroes(c_libs.EXRChannelInfo),
+        std.mem.zeroes(c_libs.EXRChannelInfo),
+        std.mem.zeroes(c_libs.EXRChannelInfo),
+        std.mem.zeroes(c_libs.EXRChannelInfo),
     };
 
     @memcpy(channels[0].name[0..2], "A\x00");
@@ -2472,40 +2485,40 @@ pub fn write_exr_rgba(
     header.channels = &channels;
 
     var pixel_types = [4]c_int{
-        tinyexr.TINYEXR_PIXELTYPE_FLOAT,
-        tinyexr.TINYEXR_PIXELTYPE_FLOAT,
-        tinyexr.TINYEXR_PIXELTYPE_FLOAT,
-        tinyexr.TINYEXR_PIXELTYPE_FLOAT,
+        c_libs.TINYEXR_PIXELTYPE_FLOAT,
+        c_libs.TINYEXR_PIXELTYPE_FLOAT,
+        c_libs.TINYEXR_PIXELTYPE_FLOAT,
+        c_libs.TINYEXR_PIXELTYPE_FLOAT,
     };
     header.pixel_types = &pixel_types;
     header.requested_pixel_types = &pixel_types;
 
     var err: [*c]const u8 = null;
-    const ret = tinyexr.SaveEXRImageToFile(&image, &header, path, &err);
-    if (ret != tinyexr.TINYEXR_SUCCESS) {
+    const ret = c_libs.SaveEXRImageToFile(&image, &header, path, &err);
+    if (ret != c_libs.TINYEXR_SUCCESS) {
         std.debug.print("tinyexr error: {s}\n", .{err});
-        tinyexr.FreeEXRErrorMessage(err);
+        c_libs.FreeEXRErrorMessage(err);
         return error.EXRWriteFailed;
     }
 }
 
 fn vlk_staging_buffer(vma: *vlk_vma, size: vk.DeviceSize, readback: bool) !vlk_vma_buffer {
     const usage = if (readback)
-        c_vma.VK_BUFFER_USAGE_TRANSFER_DST_BIT
+        c_libs.VK_BUFFER_USAGE_TRANSFER_DST_BIT
     else
-        c_vma.VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+        c_libs.VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
 
     const host_flag = if (readback)
-        c_vma.VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT
+        c_libs.VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT
     else
-        c_vma.VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
+        c_libs.VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
 
     return vlk_vma_buffer.init(
         vma,
         size,
         @intCast(usage),
-        c_vma.VMA_MEMORY_USAGE_AUTO,
-        @intCast(host_flag | c_vma.VMA_ALLOCATION_CREATE_MAPPED_BIT),
+        c_libs.VMA_MEMORY_USAGE_AUTO,
+        @intCast(host_flag | c_libs.VMA_ALLOCATION_CREATE_MAPPED_BIT),
     );
 }
 
@@ -2545,10 +2558,11 @@ pub const ImediateSubmit = struct {
 
     pub fn submit(self: @This(), queue: vk.QueueProxy) !void {
         try self.cmd.endCommandBuffer();
-        try queue.submit(1, &[1]vk.SubmitInfo{.{
+        const info = [_]vk.SubmitInfo{.{
             .command_buffer_count = 1,
             .p_command_buffers = @ptrCast(&self.cmd.handle),
-        }}, self.fence.handle);
+        }};
+        try queue.submit(&info, self.fence.handle);
     }
 
     pub fn submit_and_wait(self: @This(), queue: vk.QueueProxy, device: vk.DeviceProxy) !void {
@@ -2561,13 +2575,13 @@ pub const ImediateSubmit = struct {
     }
 };
 
-pub fn submit(
-    queue: vk.QueueProxy,
-    info: []const vk.SubmitInfo,
-    fence: vk.Fence,
-) !void {
-    try queue.submit(@intCast(info.len), info.ptr, fence);
-}
+// pub fn submit(
+//     queue: vk.QueueProxy,
+//     info: []const vk.SubmitInfo,
+//     fence: vk.Fence,
+// ) !void {
+//     try queue.submit(@intCast(info.len), info.ptr, fence);
+// }
 
 pub const vlk_fence_pool = struct {
     available: std.ArrayList(vk.Fence),

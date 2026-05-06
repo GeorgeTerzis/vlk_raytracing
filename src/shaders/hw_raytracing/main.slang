@@ -170,8 +170,8 @@ struct PointLight : Light {
 void raygen_entry() {
     // use specialization constants for these 2
     //  or at least I think I can use them here
-    static let SAMPLES_PER_PIXEL = 1;
-    static let BOUNCES = 30;
+    static let SAMPLES_PER_PIXEL = 2;
+    static let BOUNCES = 3;
     static let NOISE_THRESHOLD = 0.01;
 
     static let camera_position = float3(0, 2.2, 9.0);
@@ -221,7 +221,7 @@ void raygen_entry() {
     let color = sample_accumilator / max(sample_index, 1);
     let weight = 1.0 / float(pc.frame + 1);
     output[screen.coords.xy] = float4(lerp(prev.rgb, color, weight), 1.0);
-    // output[screen.coords.xy] = float4(lerp(prev.rgb, color, 0.1), 1.0);
+    // output[screen.coords.xy] = float4(lerp(prev.rgb, color, 0.4), 1.0);
 }
 
 [shader("miss")]
@@ -265,11 +265,11 @@ void shadow_closest_hit_entry(inout ShadowState payload,
 Principled get_material(uint index) {
     switch (index) {
     case 0:
-        return Principled(float3(1, 1, 1), 0.0, 0.0, {}, {}, {}, { 1 });
+        return Principled(float3(1, 1, 1), 0.0, 0.0, {}, {}, {}, { 0 });
     case 2:
         return Principled(float3(1), 0.4, 1, {}, {}, {});
     case 1:
-        return Principled(float3(0.1, 0.2, 0.9), 0.5, 0, {}, { 1, 0.0 });
+        return Principled(float3(1), 0.5, 0, {}, { 1, 0.0 });
     case 3:
         return Principled(float3(0.8),
                           1,
@@ -278,10 +278,10 @@ Principled get_material(uint index) {
                           {},
                           Principled::clearcoat_params(0.2, 0.4));
     case 4:
-        return Principled(float3(0, 0, 1), 0.0, 0.0, {}, {}, {}, { 1.0, 1.5, 0.0 });
+        return Principled(float3(1), 0.0, 0.0, {}, {}, {}, { 0.0, 1.5, 0.0 });
 
     default:
-        return Principled(float3(1, 1, 1), 2, 0.0, {}, {}, { 1, 0.5 });
+        return Principled(float3(0.5), 0.8, 1.0, {}, {}, { 1, 1.0 });
     }
 }
 
@@ -319,7 +319,7 @@ void direct_lighting(inout State state, Principled mat, float3 pos, Surface surf
                                               float3(0, 0, 10)));
     let light_count = lights.getCount();
     var loop_seed = 0;
-    uint i = random::ifrom_range(state.seed, 0, light_count - 1);
+    let i = random::ifrom_range(state.seed, 0, light_count - 1);
     {
         let light = lights[i];
         let light_point = light.sample_point(state.seed);
@@ -353,8 +353,8 @@ void direct_lighting(inout State state, Principled mat, float3 pos, Surface surf
                 let G = NoL * NoL_light / (dist * dist);
 
                 let pdf_light = light.sample_pdf();
-                state.color +=
-                    state.throughput * light.color * brdf * G  / ((1.0/light_count )* pdf_light);
+                state.color += state.throughput * light.color * brdf * G /
+                               ((1.0 / light_count) * pdf_light);
             }
         }
     }
@@ -383,73 +383,7 @@ void closest_hit_entry(inout State payload,
     // scatter(material.index, hit, surface, payload);
     payload.ray.Origin = safe_pos;
 
-    // direct
-    // {
-    //     static let lights = AreaLight[](AreaLight(float3(2, 5, 0),
-    //                                               float3(0, -1, 0),
-    //                                               float3(1, 0, 0),
-    //                                               float3(0, 0, 1),
-    //                                               1.0,
-    //                                               1.0,
-    //                                               float3(10, 0, 0)),
-
-    //                                     AreaLight(float3(0, 5, 0),
-    //                                               float3(0, -1, 0),
-    //                                               float3(1, 0, 0),
-    //                                               float3(0, 0, 1),
-    //                                               1.0,
-    //                                               1.0,
-    //                                               float3(0, 0, 10)),AreaLight(float3(0,
-    //                                               5, 0), float3(0, -1, 0), float3(1, 0,
-    //                                               0), float3(0, 0, 1), 1.0, 1.0,
-    //                                               float3(0, 0, 10)));
-
-    //     var ii = 0;
-    //     for (int i = 0; i < 2; i++) {
-    //         let light = lights[i];
-
-    //         let light_point = light.sample_point(payload.seed);
-    //         let to_light = light_point - safe_pos;
-    //         let dist = length(to_light);
-    //         let to_light_dir = normalize(to_light);
-    //         let NoL_light = max(dot(light.normal, -to_light_dir), 0.0);
-
-    //         if (NoL_light > 0.0) {
-    //             RayDesc shadow_ray;
-    //             shadow_ray.Origin = safe_pos;
-    //             shadow_ray.Direction = to_light_dir;
-    //             shadow_ray.TMin = 0.0001;
-    //             shadow_ray.TMax = dist - 0.0001;
-
-    //             var shadow = ShadowState(false);
-    //             TraceRay(tlas,
-    //                      RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH,
-    //                      0xFF,
-    //                      1,
-    //                      0,
-    //                      1,
-    //                      shadow_ray,
-    //                      shadow);
-
-    //             if (!shadow.hit) {
-    //                 let view = -payload.ray.Direction;
-    //                 let NoL = max(dot(surface.normal, to_light_dir), 0.0);
-
-    //                 let brdf = mat.eval(view, to_light_dir, surface);
-    //                 let G = NoL * NoL_light / (dist * dist);
-
-    //                 let pdf_light = light.sample_pdf();
-    //                 payload.color +=
-    //                     payload.throughput * light.color * brdf * G / pdf_light;
-    //             }
-    //         }
-    //     }
-    // }
-    {
-        direct_lighting(payload, mat, safe_pos, surface);
-    }
-    {
-        mat.scatter(surface, payload);
-    }
+    direct_lighting(payload, mat, safe_pos, surface);
+    mat.scatter(surface, payload);
     payload.hit = true;
 }
