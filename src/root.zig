@@ -1216,9 +1216,6 @@ pub const vlk_pc_layout = struct {
 };
 
 pub const vlk_shader_module = struct {
-    // module: vk.ShaderModule,
-    // stage: vk.ShaderStageFlags,
-    // entry: [*:0]const u8,
     info: vk.PipelineShaderStageCreateInfo,
 
     // add specialisation info,
@@ -1229,17 +1226,21 @@ pub const vlk_shader_module = struct {
         entry: [*:0]const u8,
         spirv: []const u8,
     ) !vlk_shader_module {
-        const module = try device.logical_device.createShaderModule(&.{
-            .code_size = spirv.len,
-            .p_code = @ptrCast(@alignCast(spirv.ptr)),
-        }, null);
-        errdefer device.logical_device.destroyShaderModule(module, null);
+        const module = try device.logical_device.createShaderModule(
+            &.{
+                .code_size = spirv.len,
+                .p_code = @ptrCast(@alignCast(spirv.ptr)),
+            },
+            null,
+        );
 
         return .{
             .info = .{
                 .stage = stage,
                 .module = module,
                 .p_name = entry,
+                .flags = .{},
+                .p_specialization_info = null, // actualy useful
             },
         };
     }
@@ -1247,14 +1248,6 @@ pub const vlk_shader_module = struct {
     pub fn deinit(self: @This(), device: *vlk_device) void {
         device.logical_device.destroyShaderModule(self.info.module, null);
     }
-
-    // pub fn info(self: @This()) vk.PipelineShaderStageCreateInfo {
-    //     return .{
-    //         .stage = self.stage,
-    //         .module = self.module,
-    //         .p_name = self.entry,
-    //     };
-    // }
 };
 
 pub const vlk_pipeline = struct {
@@ -1262,11 +1255,13 @@ pub const vlk_pipeline = struct {
     layout: vk.PipelineLayout,
     descriptor_set_layouts: []const vk.DescriptorSetLayout,
 
-    fn create_layout_info(
+    pub fn create_layout_info(
         push_constants: []const vk.PushConstantRange,
         descriptor_sets: []const vk.DescriptorSetLayout,
     ) vk.PipelineLayoutCreateInfo {
         return vk.PipelineLayoutCreateInfo{
+            .flags = .{},
+
             .push_constant_range_count = @intCast(push_constants.len),
             .p_push_constant_ranges = push_constants.ptr,
 
@@ -1275,7 +1270,7 @@ pub const vlk_pipeline = struct {
         };
     }
 
-    fn create_layout(device: *vlk_device, info: *const vk.PipelineLayoutCreateInfo) !vk.PipelineLayout {
+    pub fn create_layout(device: *vlk_device, info: *const vk.PipelineLayoutCreateInfo) !vk.PipelineLayout {
         return device.logical_device.createPipelineLayout(info, null);
     }
 
@@ -1667,19 +1662,19 @@ pub const vlk_raytracing_pipeline = struct {
         sets: []const []const vk.DescriptorSetLayoutBinding,
         stages: []const vk.PipelineShaderStageCreateInfo,
         groups: []const vk.RayTracingShaderGroupCreateInfoKHR,
-        gp: ImediateSubmit,
+        is: ImediateSubmit,
     ) !vlk_raytracing_pipeline {
+        //pipeline
         var descriptor_set_layouts = try allocator.alloc(vk.DescriptorSetLayout, sets.len);
         for (0.., sets) |i, set| {
             const layout = try vlk_create_set_layout(&u.device, set);
             descriptor_set_layouts[i] = layout;
         }
-
-        //this seems like a more general practice
         const pipeline_layout_info = vlk_pipeline.create_layout_info(pc_ranges, descriptor_set_layouts);
         const layout = try vlk_pipeline.create_layout(&u.device, &pipeline_layout_info);
+        //pipeline
 
-        //
+        //rt pipeline
         var raygen_count: usize = 0;
         var miss_count: usize = 0;
         var closest_hit_count: usize = 0;
@@ -1698,12 +1693,11 @@ pub const vlk_raytracing_pipeline = struct {
                 _ => {},
             }
         }
-
         const rt_pipeline_info = [_]vk.RayTracingPipelineCreateInfoKHR{
             vlk_make_rt_pipeline_info(
                 stages,
                 groups,
-                rt_props.max_ray_recursion_depth,
+                @min(@as(u32, 2), rt_props.max_ray_recursion_depth),
                 layout,
             ),
         };
@@ -1743,7 +1737,7 @@ pub const vlk_raytracing_pipeline = struct {
             closest_hit_count,
             callable_count,
 
-            gp,
+            is,
         );
 
         return .{
@@ -1857,7 +1851,7 @@ pub const blas_geometry_range = struct {
     len: u32,
 };
 
-pub const raytracing_acceleration_structure = struct {
+pub const rt_acceleration_structure = struct {
     handle: vk.AccelerationStructureKHR,
     buffer: vlk_vma_buffer,
 
@@ -1877,7 +1871,7 @@ pub const raytracing_acceleration_structure = struct {
         geometry_range: []const vk.AccelerationStructureBuildRangeInfoKHR,
         flags: vk.BuildAccelerationStructureFlagsKHR,
         gp: ImediateSubmit,
-    ) !raytracing_acceleration_structure {
+    ) !rt_acceleration_structure {
         var primitive_counts = try std.ArrayList(u32).initCapacity(allocator, geometry_range.len);
         defer primitive_counts.deinit(allocator);
 
@@ -1973,7 +1967,7 @@ pub const raytracing_acceleration_structure = struct {
         geometry_range: []const vk.AccelerationStructureBuildRangeInfoKHR,
         flags: vk.BuildAccelerationStructureFlagsKHR,
         gp: ImediateSubmit,
-    ) !raytracing_acceleration_structure {
+    ) !rt_acceleration_structure {
         return init(allocator, vma, device, .bottom_level_khr, geometry, geometry_range, flags, gp);
     }
 
@@ -1981,32 +1975,33 @@ pub const raytracing_acceleration_structure = struct {
         allocator: std.mem.Allocator,
         vma: *vlk_vma,
         device: *vlk_device,
-        children: []raytracing_acceleration_structure,
+        children: []rt_acceleration_structure,
         transforms: []vk.TransformMatrixKHR,
         flags: vk.BuildAccelerationStructureFlagsKHR,
         gp: ImediateSubmit,
-    ) !raytracing_acceleration_structure {
+    ) !rt_acceleration_structure {
         // build instance array
         var instances = try std.ArrayList(vk.AccelerationStructureInstanceKHR)
             .initCapacity(allocator, children.len);
         defer instances.deinit(allocator);
-
-        for (children, 0..) |blas, i| {
-            const bb = vk.GeometryInstanceFlagsKHR{
-                .triangle_facing_cull_disable_bit_khr = true,
-            };
-            try instances.append(allocator, .{
-                .transform = transforms[i],
-                .instance_custom_index_and_mask = .{
-                    .instance_custom_index = @intCast(i),
-                    .mask = 0xFF,
-                },
-                .instance_shader_binding_table_record_offset_and_flags = .{
-                    .instance_shader_binding_table_record_offset = 0,
-                    .flags = @intCast(bb.toInt()),
-                },
-                .acceleration_structure_reference = blas.address(device),
-            });
+        {
+            for (children, 0..) |blas, i| {
+                const sbt_record_flags = vk.GeometryInstanceFlagsKHR{
+                    .triangle_facing_cull_disable_bit_khr = true,
+                };
+                try instances.append(allocator, .{
+                    .transform = transforms[i],
+                    .instance_custom_index_and_mask = .{
+                        .instance_custom_index = @intCast(i),
+                        .mask = 0xFF,
+                    },
+                    .instance_shader_binding_table_record_offset_and_flags = .{
+                        .instance_shader_binding_table_record_offset = 0,
+                        .flags = @intCast(sbt_record_flags.toInt()),
+                    },
+                    .acceleration_structure_reference = blas.address(device),
+                });
+            }
         }
 
         // upload instance buffer
@@ -2083,8 +2078,10 @@ pub const raytracing_geometry_data = struct {
             .vertex_data = .{ .device_address = m.vertex_buffer.address(device) },
             .vertex_stride = @sizeOf(f32) * 3,
             .max_vertex = m.vertex_count - 1,
+
             .index_type = .uint32,
             .index_data = .{ .device_address = m.index_buffer.address(device) },
+
             .transform_data = .{ .device_address = 0 },
         };
 
@@ -2092,7 +2089,9 @@ pub const raytracing_geometry_data = struct {
             .geometry = vk.AccelerationStructureGeometryKHR{
                 .geometry_type = .triangles_khr,
                 .geometry = .{ .triangles = triangles },
-                .flags = .{ .opaque_bit_khr = true },
+                .flags = .{
+                    .opaque_bit_khr = true,
+                },
             },
             .range = vk.AccelerationStructureBuildRangeInfoKHR{
                 .primitive_count = tri_count,

@@ -5,8 +5,8 @@ import surface;
 import material;
 
 import principled;
-import glass;
-import emission;
+// import glass;
+// import emission;
 
 // adaptive sampling: https://cs184.eecs.berkeley.edu/sp21/docs/proj3-1-part-5
 struct PC {
@@ -115,86 +115,96 @@ struct Primitive {
     }
 };
 
-float3 sample_phase_function(float3 wo, float g, inout uint seed) {
-    float u1 = random::unit(seed);
-    float u2 = random::unit(seed);
-    float cos_theta;
+struct ShadowState {
+    bool hit;
+};
 
-    if (abs(g) < 1e-3) {
-        cos_theta = 1.0 - 2.0 * u1;
-    } else {
-        float sqr = (1.0 - g * g) / (1.0 - g + 2.0 * g * u1);
-        cos_theta = (1.0 + g * g - sqr * sqr) / (2.0 * g);
+interface Light {
+    float3 sample_point(inout uint seed);
+    float3 pos();
+};
+
+struct AreaLight : Light {
+    float3 position;
+
+    float3 normal;
+    float3 tangent;
+    float3 bitangent;
+
+    float width;
+    float height;
+
+    float3 color;
+
+    float3 sample_point(inout uint seed) {
+        let u = random::unit(seed) - 0.5;
+        let v = random::unit(seed) - 0.5;
+        return position + tangent * (u * width) + bitangent * (v * height);
     }
 
-    float sin_theta = sqrt(max(0.0, 1.0 - cos_theta * cos_theta));
-    float phi = 2.0 * PI * u2;
+    float area() {
+        return width * height;
+    }
 
-    float3 dir = float3(cos(phi) * sin_theta, sin(phi) * sin_theta, cos_theta);
+    float3 pos() {
+        return position;
+    }
 
-    float3 w = normalize(wo);
-    float3 a = (abs(w.z) < 0.999) ? float3(0, 0, 1) : float3(1, 0, 0);
-    float3 v = normalize(cross(a, w));
-    float3 u = cross(w, v);
+    float sample_pdf() {
+        return 1 / area();
+    }
+};
+struct PointLight : Light {
+    float3 position;
+    float3 color;
 
-    return normalize(u * dir.x + v * dir.y + w * dir.z);
-}
-
-float convergence(float sigma, float n) {
-    return 1.96 * (sigma) / sqrt(n);
-}
-
-bool check_convergence(inout float s1, inout float s2, float xk, int n, float threshold) {
-    s1 += xk;
-    s2 += xk * xk;
-    if (n <= 10)
-        return false;
-    let mu = s1 / float(n);
-    let sigma2 = (1.0 / float(n - 1)) * (s2 - (s1 * s1) / float(n));
-    let I = convergence(sqrt(sigma2), float(n));
-    return I < threshold * mu;
-}
+    float3 sample_point(inout uint seed) {
+        return position;
+    }
+    float3 pos() {
+        return position;
+    }
+};
 
 [shader("raygeneration")]
 void raygen_entry() {
     // use specialization constants for these 2
     //  or at least I think I can use them here
     static let SAMPLES_PER_PIXEL = 1;
-    static let BOUNCES = 20;
+    static let BOUNCES = 30;
     static let NOISE_THRESHOLD = 0.01;
 
-    let ray_origin = float3(0, 2.0, 9.0);
+    static let camera_position = float3(0, 2.2, 9.0);
+    static let fov = 1;
 
     let screen = Screen::make(uint3(pc.pos, 0) + DispatchRaysIndex());
     let raw_uv = (float2(screen.coords.xy) - (pc.res.xy * 0.5)) / (pc.res.y);
     let norm_uv = float2(screen.coords.xy) / float2(pc.res.xy);
-
     var seed = screen.coords.x * 1973 + screen.coords.y * 9277 + pc.frame * 26699;
 
     let prev = output[screen.coords.xy];
 
-    var sample = uint(0);
+    var sample_index = uint(0);
     var sample_accumilator = float3(0);
 
-    for (; sample < SAMPLES_PER_PIXEL; sample++) {
+    for (; sample_index < SAMPLES_PER_PIXEL; sample_index++) {
         let jitter = random::f2(seed);
-        let uv = (float2(screen.coords.xy) + jitter - (pc.res.xy * 0.5)) / (pc.res.y);
-
+        let uv =
+            ((float2(screen.coords.xy) + jitter - (pc.res.xy * 0.5)) / (pc.res.y)) * fov;
         let dir = normalize(float3(uv.x, -uv.y, -1.0));
 
         RayDesc ray;
-        ray.Origin = ray_origin;
+        ray.Origin = camera_position;
         ray.Direction = dir;
         ray.TMin = 0.00001;
         ray.TMax = 10000.0;
 
         var bounce = 0;
         var payload = State(ray, float3(0), float3(1), seed, false);
-
         for (; bounce < BOUNCES; bounce++) {
             payload.hit = false;
 
-            TraceRay(tlas, RAY_FLAG_NONE, 0xFF, 0, 0, 0, payload.ray, payload);
+            TraceRay(tlas, RAYQUERY_FLAG_NONE, 0xFF, 0, 0, 0, payload.ray, payload);
 
             if (!payload.hit) {
                 break;
@@ -208,12 +218,14 @@ void raygen_entry() {
         }
         sample_accumilator += payload.color;
     }
-    let color = sample_accumilator / max(sample, 1);
+    let color = sample_accumilator / max(sample_index, 1);
     let weight = 1.0 / float(pc.frame + 1);
     output[screen.coords.xy] = float4(lerp(prev.rgb, color, weight), 1.0);
     // output[screen.coords.xy] = float4(lerp(prev.rgb, color, 0.1), 1.0);
 }
 
+[shader("miss")]
+void shadow_miss_entry(inout ShadowState payload) {}
 [shader("miss")]
 void miss_entry(inout State payload) {
     payload.color = payload.throughput * float3(0.9, 0.7, 0.95) * 1;
@@ -244,38 +256,108 @@ struct HitInfo {
     }
 };
 
-void scatter(const uint material,
-             const HitInfo hit,
-             const Surface surface,
-             inout State state) {
-    state.hit = true;
-    switch (material) {
+[shader("closesthit")]
+void shadow_closest_hit_entry(inout ShadowState payload,
+                              const BuiltInTriangleIntersectionAttributes attr) {
+    payload.hit = true;
+}
+
+Principled get_material(uint index) {
+    switch (index) {
     case 0:
-    case 2: {
-        static let mirror = Principled(float3(1), 0.4, 1, {}, {}, {});
-        return mirror.scatter(surface, state);
+        return Principled(float3(1, 1, 1), 0.0, 0.0, {}, {}, {}, { 1 });
+    case 2:
+        return Principled(float3(1), 0.4, 1, {}, {}, {});
+    case 1:
+        return Principled(float3(0.1, 0.2, 0.9), 0.5, 0, {}, { 1, 0.0 });
+    case 3:
+        return Principled(float3(0.8),
+                          1,
+                          0.0,
+                          {},
+                          {},
+                          Principled::clearcoat_params(0.2, 0.4));
+    case 4:
+        return Principled(float3(0, 0, 1), 0.0, 0.0, {}, {}, {}, { 1.0, 1.5, 0.0 });
+
+    default:
+        return Principled(float3(1, 1, 1), 2, 0.0, {}, {}, { 1, 0.5 });
     }
-    case 1: {
-        static let cloth_diffuse = Principled::diffuse_pararms(0);
-        static let cloth_sheen = Principled::sheen_params(5, 0);
-        static let cloth = Principled(float3(0.7, 0, 0), 0.5, 0, cloth_diffuse, cloth_sheen);
-        return cloth.scatter(surface, state);
+}
+
+void direct_lighting(inout State state, Principled mat, float3 pos, Surface surface) {
+    static let lights = AreaLight[](AreaLight(float3(1, 5, 0),
+                                              float3(0, -1, 0),
+                                              float3(1, 0, 0),
+                                              float3(0, 0, 1),
+                                              1.0,
+                                              1.0,
+                                              float3(10, 0, 0)),
+
+                                    AreaLight(float3(0, 5, 0),
+                                              float3(0, -1, 0),
+                                              float3(1, 0, 0),
+                                              float3(0, 0, 1),
+                                              1.0,
+                                              1.0,
+                                              float3(0, 10, 0)),
+
+                                    AreaLight(float3(0, 5, 3),
+                                              float3(0, -1, 0),
+                                              float3(1, 0, 0),
+                                              float3(0, 0, 1),
+                                              1.0,
+                                              1.0,
+                                              float3(0, 0, 10)),
+
+                                    AreaLight(float3(0, 5, 3),
+                                              float3(0, -1, 0),
+                                              float3(1, 0, 0),
+                                              float3(0, 0, 1),
+                                              1.0,
+                                              1.0,
+                                              float3(0, 0, 10)));
+    let light_count = lights.getCount();
+    var loop_seed = 0;
+    uint i = random::ifrom_range(state.seed, 0, light_count - 1);
+    {
+        let light = lights[i];
+        let light_point = light.sample_point(state.seed);
+        let to_light = light_point - pos;
+        let dist = length(to_light);
+        let to_light_dir = normalize(to_light);
+        let NoL_light = max(dot(light.normal, -to_light_dir), 0.0);
+
+        if (NoL_light > 0.0) {
+            RayDesc shadow_ray;
+            shadow_ray.Origin = pos;
+            shadow_ray.Direction = to_light_dir;
+            shadow_ray.TMin = 0.0001;
+            shadow_ray.TMax = dist - 0.0001;
+
+            var shadow = ShadowState(false);
+            TraceRay(tlas,
+                     RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH,
+                     0xFF,
+                     1,
+                     0,
+                     1,
+                     shadow_ray,
+                     shadow);
+
+            if (!shadow.hit) {
+                let view = -state.ray.Direction;
+                let NoL = max(dot(surface.normal, to_light_dir), 0.0);
+
+                let brdf = mat.eval(view, to_light_dir, surface);
+                let G = NoL * NoL_light / (dist * dist);
+
+                let pdf_light = light.sample_pdf();
+                state.color +=
+                    state.throughput * light.color * brdf * G  / ((1.0/light_count )* pdf_light);
+            }
+        }
     }
-    case 3: {
-        static let diffuse_dif = Principled::diffuse_pararms(0);
-        static let diffuse_clearcoat = Principled::clearcoat_params(2, 1);
-        static let diffuse = Principled(float3(0.8), 0.5, 0.0, diffuse_dif, {}, diffuse_clearcoat);
-        return diffuse.scatter(surface, state);
-    }
-    case 4: {
-        static let glass = Glass(float3(1), 2, 0.0, 0.2);
-        return glass.scatter(surface, state);
-    }
-    default: {
-        static let default_mat = Principled(float3(0.8, 0.1, 0.4), 0.8, 0.0);
-        return default_mat.scatter(surface, state);
-    }
-    };
 }
 
 [shader("closesthit")]
@@ -295,6 +377,79 @@ void closest_hit_entry(inout State payload,
     // uint seed = material.index * 2;
     // payload.color = random::f3(seed);
     // payload.hit = false;
-    scatter(material.index, hit, surface, payload);
+
+    let mat = get_material(material.index);
+
+    // scatter(material.index, hit, surface, payload);
     payload.ray.Origin = safe_pos;
+
+    // direct
+    // {
+    //     static let lights = AreaLight[](AreaLight(float3(2, 5, 0),
+    //                                               float3(0, -1, 0),
+    //                                               float3(1, 0, 0),
+    //                                               float3(0, 0, 1),
+    //                                               1.0,
+    //                                               1.0,
+    //                                               float3(10, 0, 0)),
+
+    //                                     AreaLight(float3(0, 5, 0),
+    //                                               float3(0, -1, 0),
+    //                                               float3(1, 0, 0),
+    //                                               float3(0, 0, 1),
+    //                                               1.0,
+    //                                               1.0,
+    //                                               float3(0, 0, 10)),AreaLight(float3(0,
+    //                                               5, 0), float3(0, -1, 0), float3(1, 0,
+    //                                               0), float3(0, 0, 1), 1.0, 1.0,
+    //                                               float3(0, 0, 10)));
+
+    //     var ii = 0;
+    //     for (int i = 0; i < 2; i++) {
+    //         let light = lights[i];
+
+    //         let light_point = light.sample_point(payload.seed);
+    //         let to_light = light_point - safe_pos;
+    //         let dist = length(to_light);
+    //         let to_light_dir = normalize(to_light);
+    //         let NoL_light = max(dot(light.normal, -to_light_dir), 0.0);
+
+    //         if (NoL_light > 0.0) {
+    //             RayDesc shadow_ray;
+    //             shadow_ray.Origin = safe_pos;
+    //             shadow_ray.Direction = to_light_dir;
+    //             shadow_ray.TMin = 0.0001;
+    //             shadow_ray.TMax = dist - 0.0001;
+
+    //             var shadow = ShadowState(false);
+    //             TraceRay(tlas,
+    //                      RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH,
+    //                      0xFF,
+    //                      1,
+    //                      0,
+    //                      1,
+    //                      shadow_ray,
+    //                      shadow);
+
+    //             if (!shadow.hit) {
+    //                 let view = -payload.ray.Direction;
+    //                 let NoL = max(dot(surface.normal, to_light_dir), 0.0);
+
+    //                 let brdf = mat.eval(view, to_light_dir, surface);
+    //                 let G = NoL * NoL_light / (dist * dist);
+
+    //                 let pdf_light = light.sample_pdf();
+    //                 payload.color +=
+    //                     payload.throughput * light.color * brdf * G / pdf_light;
+    //             }
+    //         }
+    //     }
+    // }
+    {
+        direct_lighting(payload, mat, safe_pos, surface);
+    }
+    {
+        mat.scatter(surface, payload);
+    }
+    payload.hit = true;
 }

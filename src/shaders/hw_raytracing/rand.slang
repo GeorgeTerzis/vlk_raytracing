@@ -14,6 +14,14 @@ public struct random {
         return n;
     }
 
+    public static int ifrom_range(inout uint seed, int min, int max) {
+        seed = pcg_hash(seed);
+
+        let range_length = max - min;
+        let n : int = max - (seed % (range_length + 1));
+        return n;
+    }
+
     public static float from_range(inout uint seed, float min, float max) {
         seed = pcg_hash(seed);
         let n = float(seed) / float(0xffffffffu);

@@ -53,4 +53,9 @@ public struct Glass : Material {
             payload.ray.Direction = refraction(I, N, eta, roughness, payload.seed);
         }
     }
+
+    float3 eval(float3 view, float3 light_dir, Surface surface) {
+        return float3(0);
+    }
+
 };

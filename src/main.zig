@@ -12,43 +12,10 @@ const MousePos = extern struct {
     y: f32,
 };
 
-const PC = extern struct {
-    const Buffers = struct {
-        verts: u64,
-        norms: u64,
-        uvs: u64,
-        indices: u64,
-        normal_indices: u64,
-    };
-
-    const Geometry = extern struct {
-        buffer_index: u32,
-    };
-
-    const Range = extern struct {
-        geometry_indices: u64,
-    };
-
-    width: u32 = 0,
-    height: u32 = 0,
-    time: f32 = 0.0,
-    frame: u32 = 0.0,
-
-    posx: u32 = 0.0,
-    posy: u32 = 0.0,
-
-    mouse: MousePos = .{ .x = 0, .y = 0 },
-
-    buffers: u64 = 0,
-    geometries: u64 = 0,
-    ranges: u64 = 0,
-    materials: u64 = 0,
-};
-
 const HW_raytracing_pipeline = struct {
     pipeline: emma.vlk_raytracing_pipeline,
 
-    const PushConstant = extern struct {
+    const PC = extern struct {
         const Buffers = struct {
             verts: u64,
             norms: u64,
@@ -88,11 +55,14 @@ const HW_raytracing_pipeline = struct {
         shader_modules: []const emma.vlk_shader_module,
         is: emma.ImediateSubmit,
     ) !@This() {
-        const stages = [_]vk.PipelineShaderStageCreateInfo{
-            shader_modules[0].info,
-            shader_modules[1].info,
-            shader_modules[2].info,
-        };
+        //devilish cast
+        const stages = @as([]const vk.PipelineShaderStageCreateInfo, @ptrCast(shader_modules));
+
+        // const stages = [_]vk.PipelineShaderStageCreateInfo{
+        //     shader_modules[0].info,
+        //     shader_modules[1].info,
+        //     shader_modules[2].info,
+        // };
 
         // groups can be used to make shader combinations
         // for example triangle_hit + any hit
@@ -105,14 +75,15 @@ const HW_raytracing_pipeline = struct {
             emma.rt_group_info.general(0),
             //miss
             emma.rt_group_info.general(1),
+            emma.rt_group_info.general(4),
             //hit
             emma.rt_group_info.triangles_hit(2),
+            emma.rt_group_info.triangles_hit(3),
         };
-        //do not touch these for now
 
         const push_constant_ranges = [_]vk.PushConstantRange{
             emma.push_constant_range(
-                PushConstant,
+                PC,
                 emma.FlagBuilder(vk.ShaderStageFlags)
                     .begin("raygen_bit_khr")
                     .enable("miss_bit_khr")
@@ -128,13 +99,18 @@ const HW_raytracing_pipeline = struct {
                     .binding = 0,
                     .descriptor_type = .acceleration_structure_khr,
                     .descriptor_count = 1,
-                    .stage_flags = .{ .raygen_bit_khr = true },
+                    .stage_flags = emma.FlagBuilder(vk.ShaderStageFlags)
+                        .begin("raygen_bit_khr")
+                        .enable("closest_hit_bit_khr")
+                        .build(),
                 },
                 .{
                     .binding = 1,
                     .descriptor_type = .storage_image,
                     .descriptor_count = 1,
-                    .stage_flags = .{ .raygen_bit_khr = true },
+                    .stage_flags = emma.FlagBuilder(vk.ShaderStageFlags)
+                        .begin("raygen_bit_khr")
+                        .build(),
                 },
             },
         };
@@ -145,7 +121,7 @@ const HW_raytracing_pipeline = struct {
             rt_props,
             &push_constant_ranges,
             &set_bindings,
-            &stages,
+            stages,
             &groups,
             is,
         );
@@ -159,90 +135,6 @@ const HW_raytracing_pipeline = struct {
         self.pipeline.deinit(allocator, &u.vma, &u.device);
     }
 };
-
-// fn Handle(comptime T: type) type {
-//     const Self = struct {
-//         data: u32 = 0,
-
-//         pub const Type = T;
-//         pub const __Handle_mark = void;
-
-//         pub fn from_int(i: u32) @This() {
-//             return .{ .data = i };
-//         }
-//     };
-
-//     return Self;
-// }
-
-// fn is_Handle(comptime T: type) bool {
-//     return @hasDecl(T, "__is_handle");
-// }
-
-// fn Allocator(comptime T: type) type {
-//     const H = Handle(T);
-
-//     const Self = struct {
-//         const Self = @This();
-//         pub const Handle = H;
-
-//         data: std.ArrayList(T),
-//         free: std.ArrayList(u32),
-
-//         pub fn init_capacity(allocator: std.mem.Allocator, capacity: usize) Self {
-//             return .{
-//                 .data = std.ArrayList(T).initCapacity(allocator, capacity),
-//                 .free = std.ArrayList(u32).initCapacity(allocator, capacity / 2),
-//             };
-//         }
-//         pub fn init_from_buffers(allocator: std.mem.Allocator, list: std.ArrayList(T)) Self {
-//             return .{
-//                 .data = list,
-//                 .free = std.ArrayList(u32).init(allocator, list.items.len / 2),
-//             };
-//         }
-
-//         pub fn deinit(self: *Self) void {
-//             self.data.deinit();
-//             self.free.deinit();
-//         }
-
-//         pub fn add(self: *Self, value: T) !H {
-//             if (self.free.items.len > 0) {
-//                 const index = self.free.pop();
-//                 self.data.items[index] = value;
-//                 return .{ .index = index };
-//             }
-
-//             const index: u32 = @intCast(self.data.items.len);
-//             try self.data.append(value);
-//             return .{ .index = index };
-//         }
-
-//         pub fn remove(self: *Self, handle: H) !void {
-//             const index = handle.index;
-//             if (index >= self.data.items.len) return error.InvalidIndex;
-
-//             try self.free.append(index);
-//             self.data.items[index] = undefined;
-//         }
-
-//         pub fn get_val(self: *Self, handle: H) T {
-//             return self.data.items[handle.index];
-//         }
-
-//         pub fn get_ptr(self: *Self, handle: H) *T {
-//             return &self.data.items[handle.index];
-//         }
-//     };
-
-//     return Self;
-// }
-
-// const Resources = struct {
-//     local: []emma.local_geometry.geometry,
-//     device: []emma.device_geometry,
-// };
 
 const ThreadContext = struct {
     allocator: std.mem.Allocator,
@@ -368,8 +260,8 @@ pub fn main() !void {
     //     break :blk result;
     // };
 
-    // const scene_filepath = if (builtin.mode == .Debug) "./scene_lite.zon" else "./scene.zon";
-    const scene_filepath = "./scene.zon";
+    const scene_filepath = if (builtin.mode == .Debug) "./scene_lite.zon" else "./scene.zon";
+    // const scene_filepath = "./scene.zon";
     var scene_config = blk: {
         const file = try std.fs.cwd().openFile(scene_filepath, .{});
         defer file.close();
@@ -417,8 +309,8 @@ pub fn main() !void {
 
     var blas_geometry_storage = std.MultiArrayList(emma.raytracing_geometry_data){};
     try blas_geometry_storage.ensureTotalCapacity(allocator, 5);
-    var materials_storage = try std.ArrayList(u32).initCapacity(allocator, 5);
 
+    var materials_storage = try std.ArrayList(u32).initCapacity(allocator, 5);
     defer materials_storage.deinit(allocator);
 
     var blas_ranges = try std.ArrayList(emma.blas_geometry_range).initCapacity(allocator, scene_config.assets.len);
@@ -465,7 +357,7 @@ pub fn main() !void {
 
     defer materials.deinit(allocator);
 
-    var blas_list = try std.ArrayList(emma.raytracing_acceleration_structure).initCapacity(allocator, 10);
+    var blas_list = try std.ArrayList(emma.rt_acceleration_structure).initCapacity(allocator, 10);
     {
         var timer = try std.time.Timer.start();
         for (blas_ranges.items) |range| {
@@ -476,7 +368,7 @@ pub fn main() !void {
             const geometries = blas_geometry_storage.items(.geometry)[begin..end];
             const ranges = blas_geometry_storage.items(.range)[begin..end];
 
-            const blas = try emma.raytracing_acceleration_structure.init_blas(
+            const blas = try emma.rt_acceleration_structure.init_blas(
                 allocator,
                 &u.vma,
                 &u.device,
@@ -527,7 +419,7 @@ pub fn main() !void {
     defer device_materials.deinit(&u.vma);
 
     const buffers = blk: {
-        var buffers_info = try std.ArrayList(PC.Buffers).initCapacity(allocator, device_geometry_storage.len);
+        var buffers_info = try std.ArrayList(HW_raytracing_pipeline.PC.Buffers).initCapacity(allocator, device_geometry_storage.len);
 
         for (device_geometry_storage) |mesh| {
             buffers_info.appendAssumeCapacity(
@@ -604,7 +496,7 @@ pub fn main() !void {
 
     var mouse = MousePos{ .x = 0, .y = 0 };
 
-    var pc2 = PC{
+    var pc2 = HW_raytracing_pipeline.PC{
         .height = 0,
         .width = 0,
         .time = 0,
@@ -618,7 +510,7 @@ pub fn main() !void {
         .materials = device_materials.address(&u.device),
     };
 
-    const tlas = try emma.raytracing_acceleration_structure.init_tlas(
+    const tlas = try emma.rt_acceleration_structure.init_tlas(
         allocator,
         &u.vma,
         &u.device,
@@ -637,31 +529,44 @@ pub fn main() !void {
     const spirv = try emma.readfile_alloc(allocator, file);
     defer allocator.free(spirv);
 
-    const raygen_module = try emma.vlk_shader_module.init(
-        &u.device,
-        .{ .raygen_bit_khr = true },
-        "raygen_entry",
-        spirv,
-    );
-    const miss_module = try emma.vlk_shader_module.init(
-        &u.device,
-        .{ .miss_bit_khr = true },
-        "miss_entry",
-        spirv,
-    );
-    const closest_hit_module = try emma.vlk_shader_module.init(
-        &u.device,
-        .{ .closest_hit_bit_khr = true },
-        "closest_hit_entry",
-        spirv,
-    );
-    defer raygen_module.deinit(&u.device);
-    defer miss_module.deinit(&u.device);
-    defer closest_hit_module.deinit(&u.device);
-
     const rt_modules = [_]emma.vlk_shader_module{
-        raygen_module, miss_module, closest_hit_module,
+        try emma.vlk_shader_module.init(
+            &u.device,
+            .{ .raygen_bit_khr = true },
+            "raygen_entry",
+            spirv,
+        ),
+        try emma.vlk_shader_module.init(
+            &u.device,
+            .{ .miss_bit_khr = true },
+            "miss_entry",
+            spirv,
+        ),
+        try emma.vlk_shader_module.init(
+            &u.device,
+            .{ .closest_hit_bit_khr = true },
+            "closest_hit_entry",
+            spirv,
+        ),
+
+        try emma.vlk_shader_module.init(
+            &u.device,
+            .{ .closest_hit_bit_khr = true },
+            "shadow_closest_hit_entry",
+            spirv,
+        ),
+        try emma.vlk_shader_module.init(
+            &u.device,
+            .{ .miss_bit_khr = true },
+            "shadow_miss_entry",
+            spirv,
+        ),
     };
+    defer {
+        for (rt_modules) |module| {
+            module.deinit(&u.device);
+        }
+    }
 
     var rt = try HW_raytracing_pipeline.init(allocator, &u, &rt_props, &rt_modules, is);
     defer rt.deinit(allocator, &u);
@@ -753,6 +658,34 @@ pub fn main() !void {
             try is.submit_and_wait(u.device.queue, u.device.logical_device);
         }
         defer render_texture.deinit(&u.vma, &u.device);
+        {
+            const mip_count = 6;
+            const mips = try allocator.alloc(emma.vlk_image, mip_count);
+            defer allocator.free(mips);
+            for (mips, 1..) |mip, i| {
+                _ = i;
+                mip = try emma.vlk_image.init(
+                    &u.vma,
+                    &u.device,
+                    .r32g32b32a32_sfloat,
+                    .{
+                        .transfer_dst_bit = true,
+                        .transfer_src_bit = true,
+                        .sampled_bit = true,
+                        .storage_bit = true,
+                    },
+                    .{
+                        .color_bit = true,
+                    },
+                    .{
+                        .width = render_texture_width,
+                        .height = render_texture_height,
+                        .depth = 1,
+                    },
+                    false,
+                );
+            }
+        }
 
         const alloc_info = vk.DescriptorSetAllocateInfo{
             .descriptor_pool = descriptor_pool.handle,

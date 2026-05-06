@@ -6,5 +6,5 @@ struct LobeResult {
 };
 
 interface Lobe {
-    LobeResult sample(float3 view, Surface surface, float2 u, inout uint seed);
+    LobeResult sample_lobe(float3 view, Surface surface, float2 u, inout uint seed);
 };
