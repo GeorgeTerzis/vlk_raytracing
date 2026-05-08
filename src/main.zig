@@ -5,7 +5,7 @@ const config = @import("config.zig");
 
 const sdl = emma.sdl;
 const vk = emma.vk;
-const vma = emma.c_vma;
+// const vma = emma.c_vma;
 
 const MousePos = extern struct {
     x: f32,
@@ -144,23 +144,23 @@ const ThreadContext = struct {
     duration_ns: u64 = 0,
 };
 
-fn load_geometry_thread(ctx: *ThreadContext) void {
-    var timer = std.time.Timer.start() catch {
-        ctx.err = error.TimerUnsupported;
-        return;
-    };
-    ctx.result = load_geometry(ctx.allocator, ctx.path) catch |e| {
+fn load_geometry_thread(ctx: *ThreadContext, io: std.Io) void {
+    // var timer = std.time.Timer.start() catch {
+    //     ctx.err = error.TimerUnsupported;
+    //     return;
+    // };
+    ctx.result = load_geometry(ctx.allocator, io, ctx.path) catch |e| {
         ctx.err = e;
         return;
     };
-    ctx.duration_ns = timer.lap();
+    // ctx.duration_ns = timer.lap();
 }
 
-fn load_geometry(allocator: std.mem.Allocator, filepath: []const u8) !emma.local_geometry.geometry {
-    const file = try std.fs.cwd().openFile(filepath, .{});
-    defer file.close();
+fn load_geometry(allocator: std.mem.Allocator, io: std.Io, filepath: []const u8) !emma.local_geometry.geometry {
+    const file = try std.Io.Dir.cwd().openFile(io, filepath, .{});
+    defer file.close(io);
 
-    const d = try emma.readfile_alloc(allocator, file);
+    const d = try emma.readfile_alloc(allocator, io, file);
     defer allocator.free(d);
 
     var obj_model = try emma.obj.parseObj(allocator, d);
@@ -171,10 +171,9 @@ fn load_geometry(allocator: std.mem.Allocator, filepath: []const u8) !emma.local
 
 fn build_local_geometry(
     allocator: std.mem.Allocator,
+    io: std.Io,
     list: []const config.Primitive,
 ) ![]emma.local_geometry.geometry {
-    var total_timer = try std.time.Timer.start();
-
     const local_geometries = try allocator.alloc(emma.local_geometry.geometry, list.len);
     errdefer allocator.free(local_geometries);
 
@@ -189,7 +188,7 @@ fn build_local_geometry(
     }
 
     for (contexts, threads) |*ctx, *thread| {
-        thread.* = try std.Thread.spawn(.{}, load_geometry_thread, .{ctx});
+        thread.* = try std.Thread.spawn(.{}, load_geometry_thread, .{ ctx, io });
     }
 
     for (threads) |thread| {
@@ -205,12 +204,6 @@ fn build_local_geometry(
             @as(f64, @floatFromInt(ctx.duration_ns)) / std.time.ns_per_ms,
         });
     }
-
-    const total_ns = total_timer.read();
-    std.debug.print("geometry total wall time: {d:.3}ms\n", .{
-        @as(f64, @floatFromInt(total_ns)) / std.time.ns_per_ms,
-    });
-
     return local_geometries;
 }
 fn build_device_geometry(
@@ -243,7 +236,9 @@ fn build_device_geometry(
     return device_geometries.items;
 }
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+    const clock = std.Io.Clock.real;
     try emma.sdl_init();
     defer emma.sdl_deinit();
 
@@ -262,11 +257,12 @@ pub fn main() !void {
 
     const scene_filepath = if (builtin.mode == .Debug) "./scene_lite.zon" else "./scene.zon";
     // const scene_filepath = "./scene.zon";
-    var scene_config = blk: {
-        const file = try std.fs.cwd().openFile(scene_filepath, .{});
-        defer file.close();
 
-        const src = try emma.readfile_allocZ(allocator, file);
+    var scene_config = blk: {
+        const file = try std.Io.Dir.cwd().openFile(io, scene_filepath, .{});
+        defer file.close(io);
+
+        const src = try emma.readfile_allocZ(allocator, io, file);
         const result = try config.parse(allocator, src);
 
         break :blk result;
@@ -295,7 +291,7 @@ pub fn main() !void {
         command_buffers.buffers[0],
     );
 
-    const local_geometry_storage = try build_local_geometry(allocator, scene_config.primitive);
+    const local_geometry_storage = try build_local_geometry(allocator, io, scene_config.primitive);
     const device_geometry_storage = try build_device_geometry(allocator, &u, local_geometry_storage, is);
 
     defer is.deinit(&u.device);
@@ -356,10 +352,18 @@ pub fn main() !void {
     }
 
     defer materials.deinit(allocator);
+    var staging_pool = try std.ArrayList(emma.vlk_vma_buffer).initCapacity(allocator, 10);
+    defer {
+        for (staging_pool.items) |buffer| {
+            buffer.deinit(&u.vma);
+        }
+        staging_pool.deinit(allocator);
+    }
 
     var blas_list = try std.ArrayList(emma.rt_acceleration_structure).initCapacity(allocator, 10);
     {
-        var timer = try std.time.Timer.start();
+        const begin_time = std.Io.Timestamp.now(io, clock);
+        try is.begin();
         for (blas_ranges.items) |range| {
             const begin = range.begin;
             const len = range.len;
@@ -375,11 +379,15 @@ pub fn main() !void {
                 geometries,
                 ranges,
                 .{},
-                is,
+                &staging_pool,
+                is.cmd,
             );
             try blas_list.append(allocator, blas);
         }
-        std.debug.print("created BLAS structures in {d:.2}ms\n", .{emma.ns_to_ms(timer.lap())});
+        try is.submit_and_wait(u.queue(), u.device.logical_device);
+
+        const duration = begin_time.untilNow(io, clock);
+        std.debug.print("created BLAS structures in {d:.2}ms\n", .{duration.toMilliseconds()});
     }
     defer {
         for (blas_list.items) |b| {
@@ -389,13 +397,6 @@ pub fn main() !void {
     }
 
     try is.begin();
-    var staging_pool = try std.ArrayList(emma.vlk_vma_buffer).initCapacity(allocator, 10);
-    defer {
-        for (staging_pool.items) |buffer| {
-            buffer.deinit(&u.vma);
-        }
-        staging_pool.deinit(allocator);
-    }
 
     const device_materials = blk: {
         try staging_pool.append(allocator, try emma.vlk_upload_buffer_with_data(
@@ -405,10 +406,10 @@ pub fn main() !void {
         const buffer = try emma.vlk_vma_buffer.init(
             &u.vma,
             staging_pool.getLast().size,
-            emma.c_vma.VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-                emma.c_vma.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                emma.c_vma.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-            emma.c_vma.VMA_MEMORY_USAGE_AUTO,
+            emma.c_libs.VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                emma.c_libs.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                emma.c_libs.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+            emma.c_libs.VMA_MEMORY_USAGE_AUTO,
             0,
         );
         staging_pool.getLast().cmd_copy_to(&buffer, is.cmd);
@@ -441,9 +442,9 @@ pub fn main() !void {
         const buffer = try emma.vlk_vma_buffer.init(
             &u.vma,
             staging_pool.getLast().size,
-            emma.c_vma.VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-                emma.c_vma.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-            emma.c_vma.VMA_MEMORY_USAGE_AUTO,
+            emma.c_libs.VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                emma.c_libs.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+            emma.c_libs.VMA_MEMORY_USAGE_AUTO,
             0,
         );
 
@@ -461,9 +462,9 @@ pub fn main() !void {
         const buffer = try emma.vlk_vma_buffer.init(
             &u.vma,
             staging_pool.getLast().size,
-            emma.c_vma.VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-                emma.c_vma.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-            emma.c_vma.VMA_MEMORY_USAGE_AUTO,
+            emma.c_libs.VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                emma.c_libs.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+            emma.c_libs.VMA_MEMORY_USAGE_AUTO,
             0,
         );
 
@@ -481,9 +482,9 @@ pub fn main() !void {
         const buffer = try emma.vlk_vma_buffer.init(
             &u.vma,
             staging_pool.getLast().size,
-            emma.c_vma.VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-                emma.c_vma.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-            emma.c_vma.VMA_MEMORY_USAGE_AUTO,
+            emma.c_libs.VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                emma.c_libs.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+            emma.c_libs.VMA_MEMORY_USAGE_AUTO,
             0,
         );
 
@@ -517,16 +518,17 @@ pub fn main() !void {
         blas_list.items,
         instance_transforms.items,
         .{},
+        &staging_pool,
         is,
     );
     defer tlas.deinit(&u.vma, &u.device);
 
     const rt_props = emma.vlk_get_raytracing_properties(&u.vki, &u.device);
 
-    const file = try std.fs.cwd().openFile("./src/shaders/hw_raytracing/shader.spv", .{});
-    defer file.close();
+    const file = try std.Io.Dir.cwd().openFile(io, "./src/shaders/hw_raytracing/shader.spv", .{});
+    defer file.close(io);
 
-    const spirv = try emma.readfile_alloc(allocator, file);
+    const spirv = try emma.readfile_alloc(allocator, io, file);
     defer allocator.free(spirv);
 
     const rt_modules = [_]emma.vlk_shader_module{
@@ -626,12 +628,14 @@ pub fn main() !void {
                 null,
             );
 
+            const ranges = [_]vk.ImageSubresourceRange{
+                render_texture.full_subresource_range(),
+            };
             is.cmd.clearColorImage(
                 render_texture.handle,
                 .general,
-                @ptrCast(&vk.ClearColorValue{ .float_32 = .{ 0, 0, 0, 0 } }),
-                1,
-                @ptrCast(&render_texture.full_subresource_range()),
+                @ptrCast(&vk.ClearColorValue{ .float_32 = .{ 0, 0, 0, 1 } }),
+                &ranges,
             );
 
             const clear_barrier = vk.ImageMemoryBarrier2{
@@ -658,45 +662,45 @@ pub fn main() !void {
             try is.submit_and_wait(u.device.queue, u.device.logical_device);
         }
         defer render_texture.deinit(&u.vma, &u.device);
-        {
-            const mip_count = 6;
-            const mips = try allocator.alloc(emma.vlk_image, mip_count);
-            defer allocator.free(mips);
-            for (mips, 1..) |mip, i| {
-                _ = i;
-                mip = try emma.vlk_image.init(
-                    &u.vma,
-                    &u.device,
-                    .r32g32b32a32_sfloat,
-                    .{
-                        .transfer_dst_bit = true,
-                        .transfer_src_bit = true,
-                        .sampled_bit = true,
-                        .storage_bit = true,
-                    },
-                    .{
-                        .color_bit = true,
-                    },
-                    .{
-                        .width = render_texture_width,
-                        .height = render_texture_height,
-                        .depth = 1,
-                    },
-                    false,
-                );
-            }
-        }
+        // {
+        //     const mip_count = 6;
+        //     const mips = try allocator.alloc(emma.vlk_image, mip_count);
+        //     defer allocator.free(mips);
+        //     for (mips, 1..) |mip, i| {
+        //         _ = i;
+        //         mip = try emma.vlk_image.init(
+        //             &u.vma,
+        //             &u.device,
+        //             .r32g32b32a32_sfloat,
+        //             .{
+        //                 .transfer_dst_bit = true,
+        //                 .transfer_src_bit = true,
+        //                 .sampled_bit = true,
+        //                 .storage_bit = true,
+        //             },
+        //             .{
+        //                 .color_bit = true,
+        //             },
+        //             .{
+        //                 .width = render_texture_width,
+        //                 .height = render_texture_height,
+        //                 .depth = 1,
+        //             },
+        //             false,
+        //         );
+        //     }
+        // }
 
         const alloc_info = vk.DescriptorSetAllocateInfo{
             .descriptor_pool = descriptor_pool.handle,
             .descriptor_set_count = @intCast(rt.pipeline.pipeline.descriptor_set_layouts.len),
             .p_set_layouts = rt.pipeline.pipeline.descriptor_set_layouts.ptr,
         };
-        var descriptor_set: vk.DescriptorSet = undefined;
-        try u.device.logical_device.allocateDescriptorSets(&alloc_info, @ptrCast(&descriptor_set));
         var sets = [_]vk.DescriptorSet{
-            descriptor_set,
+            undefined,
         };
+        try u.device.logical_device.allocateDescriptorSets(&alloc_info, &sets);
+
         {
             const tlas_descriptor_info = vk.WriteDescriptorSetAccelerationStructureKHR{
                 .acceleration_structure_count = 1,
@@ -709,7 +713,7 @@ pub fn main() !void {
             };
             const writes = [_]vk.WriteDescriptorSet{
                 .{
-                    .dst_set = descriptor_set,
+                    .dst_set = sets[0],
                     .dst_binding = 0,
                     .descriptor_count = 1,
                     .dst_array_element = 0,
@@ -720,7 +724,7 @@ pub fn main() !void {
                     .p_next = &tlas_descriptor_info,
                 },
                 .{
-                    .dst_set = descriptor_set,
+                    .dst_set = sets[0],
                     .dst_binding = 1,
                     .descriptor_count = 1,
                     .dst_array_element = 0,
@@ -730,7 +734,7 @@ pub fn main() !void {
                     .p_buffer_info = undefined,
                 },
             };
-            u.device.logical_device.updateDescriptorSets(writes.len, &writes, 0, null);
+            u.device.logical_device.updateDescriptorSets(&writes, null);
         }
         const rt_pipeline_instance = rt.pipeline.pipeline.instance(sets[0..]);
         _ = rt_pipeline_instance;
@@ -753,9 +757,9 @@ pub fn main() !void {
             defer frames.deinit(u.device.logical_device);
 
             var quit = false;
-            const render_begin = std.time.milliTimestamp();
 
-            var time_ms = std.time.milliTimestamp() - render_begin;
+            const render_begin_ms = std.Io.Timestamp.now(io, clock).toMilliseconds();
+            var time_ms = render_begin_ms;
             var time_sec: f32 = @as(f32, @floatFromInt(time_ms)) / 1000;
 
             var samples: i32 = 0;
@@ -823,7 +827,7 @@ pub fn main() !void {
                 const frame = frames.current();
                 try frame.fence.wait_and_reset(u.device.logical_device);
 
-                const now_time_ms = std.time.milliTimestamp() - render_begin;
+                const now_time_ms = std.Io.Timestamp.now(io, clock).toMilliseconds() - render_begin_ms;
                 const now_time_sec = @as(f32, @floatFromInt(now_time_ms)) / 1000;
                 const dt = now_time_ms - time_ms;
                 _ = dt;
@@ -838,12 +842,13 @@ pub fn main() !void {
                     if (flush_render_texture) {
                         accumilation_frame_counter = 0;
                         flush_render_texture = false;
+
+                        const ranges = [_]vk.ImageSubresourceRange{render_texture.full_subresource_range()};
                         frame.cmd.clearColorImage(
                             render_texture.handle,
                             .general,
-                            @ptrCast(&vk.ClearColorValue{ .float_32 = .{ 0, 0, 0, 0 } }),
-                            1,
-                            @ptrCast(&render_texture.full_subresource_range()),
+                            @ptrCast(&vk.ClearColorValue{ .float_32 = .{ 0, 0, 0, 1 } }),
+                            &ranges,
                         );
 
                         const clear_barrier = vk.ImageMemoryBarrier2{
@@ -873,9 +878,7 @@ pub fn main() !void {
                             .ray_tracing_khr,
                             rt.pipeline.pipeline.layout,
                             0,
-                            1,
-                            @ptrCast(&descriptor_set),
-                            0,
+                            &sets,
                             null,
                         );
 
@@ -910,8 +913,6 @@ pub fn main() !void {
                         );
 
                         {
-                            // std.debug.print("{any}\n-----\n", .{tiles[0]});
-                            // std.debug.print("{any}\n\n", .{tiles[1]});
                             tiles[0] = tiles[0].next(tile_pixel_strides[0], render_texture_width);
                             if (tiles[0].pos == 0)
                                 tiles[1] = tiles[1].next(tile_pixel_strides[1], render_texture_height);
@@ -1048,7 +1049,7 @@ pub fn main() !void {
                                     .p_signal_semaphores = @ptrCast(&render_finished[image_index]),
                                 },
                             };
-                            try u.device.queue.submit(submit_info.len, &submit_info, frame.fence.handle);
+                            try u.device.queue.submit(&submit_info, frame.fence.handle);
                         }
 
                         //Present
@@ -1069,7 +1070,7 @@ pub fn main() !void {
                             .p_command_buffers = @ptrCast(&frame.cmd.handle),
                             // no wait/signal semaphores
                         };
-                        try u.device.queue.submit(1, &[1]vk.SubmitInfo{submit_info}, frame.fence.handle);
+                        try u.device.queue.submit(&[1]vk.SubmitInfo{submit_info}, frame.fence.handle);
                     }
                 }
                 frames.advance();
@@ -1078,9 +1079,9 @@ pub fn main() !void {
             }
 
             {
-                time_ms = std.time.milliTimestamp() - render_begin;
+                time_ms = std.Io.Timestamp.now(io, clock).toMilliseconds() - render_begin_ms;
                 time_sec = @as(f32, @floatFromInt(time_ms)) / 1000;
-                std.debug.print("ran for {d} with avg ms per full frame {d:.2}\n", .{ time_sec, avg_ms });
+                std.debug.print("ran for {d} with avg ms per full frame {d:.3} avg fps {d:.3}\n", .{ time_sec, avg_ms, 1000.0 / avg_ms });
             }
 
             //dump texture
@@ -1119,8 +1120,7 @@ pub fn main() !void {
                         render_texture.handle,
                         .transfer_src_optimal,
                         readback.handle,
-                        1,
-                        @ptrCast(&region),
+                        &[_]vk.BufferImageCopy{region},
                     );
                     render_texture.cmd_transition(
                         is.cmd,
@@ -1136,7 +1136,7 @@ pub fn main() !void {
                     const dump_fence = try emma.vlk_fence.init(&u.device, .{});
                     defer dump_fence.deinit(u.device.logical_device);
 
-                    try u.device.queue.submit(1, &[1]vk.SubmitInfo{.{
+                    try u.device.queue.submit(&[1]vk.SubmitInfo{.{
                         .command_buffer_count = 1,
                         .p_command_buffers = @ptrCast(&is.cmd.handle),
                     }}, dump_fence.handle);
@@ -1145,6 +1145,36 @@ pub fn main() !void {
 
                     const mapped = readback.info.pMappedData orelse return error.MapFailed;
                     const pixels: [*][4]f32 = @ptrCast(@alignCast(mapped));
+                    const total = render_texture_width * render_texture_height;
+                    var zero_alpha_count: u32 = 0;
+                    var zero_all_count: u32 = 0;
+                    var zero_color_count: u32 = 0;
+                    for (0..total) |i| {
+                        const p = pixels[i];
+                        if (p[3] == 0.0) {
+                            zero_alpha_count += 1;
+                            if (i < 10) // print first few to see their position
+                                std.debug.print("zero alpha pixel at index {d} (x={d}, y={d}) rgba={d:.3},{d:.3},{d:.3},{d:.3}\n", .{
+                                    i,
+                                    i % render_texture_width,
+                                    i / render_texture_width,
+                                    p[0],
+                                    p[1],
+                                    p[2],
+                                    p[3],
+                                });
+                        }
+                        if (p[0] == 0.0 and p[1] == 0.0 and p[2] == 0.0 and p[3] == 0.0) {
+                            zero_all_count += 1;
+                        }
+                        if (p[0] == 0.0 and p[1] == 0.0 and p[2] == 0.0) {
+                            zero_color_count += 1;
+                        }
+                    }
+                    std.debug.print("total pixels: {d}, zero alpha: {d}, fully zero: {d}, zero color: {d}\n", .{
+                        total, zero_alpha_count, zero_all_count, zero_color_count,
+                    });
+
                     try emma.write_exr_rgba(allocator, pixels, render_texture_width, render_texture_height, "render.exr");
                 }
             }

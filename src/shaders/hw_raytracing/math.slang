@@ -8,7 +8,7 @@ public float3 cosine_hemisphere(float3 normal, inout uint seed) {
     let d = random_in_unit_disk(seed);
     let x = d.x;
     let y = d.y;
-    let z = sqrt(max(0.0, 1.0 - x*x - y*y));
+    let z = sqrt(max(0.0, 1.0 - x * x - y * y));
 
     let tangent = any_perpendicular(normal);
     let bitangent = normalize(cross(normal, tangent));
@@ -22,20 +22,13 @@ float2 random_in_unit_disk(inout uint seed) {
     float theta = 2.0 * PI * r1;
     float radius = sqrt(r2);
 
-    return float2(
-        radius * cos(theta),
-        radius * sin(theta)
-    );
+    return float2(radius * cos(theta), radius * sin(theta));
 }
 public float3 random_in_unit_sphere(inout uint seed) {
     let theta = 2.0 * PI * random::unit(seed);
-    let phi   = acos(1.0 - 2.0 * random::unit(seed));
-    let r     = pow(random::unit(seed), 1.0 / 3.0);   
-    return float3(
-        r * sin(phi) * cos(theta),
-        r * sin(phi) * sin(theta),
-        r * cos(phi)
-    );
+    let phi = acos(1.0 - 2.0 * random::unit(seed));
+    let r = pow(random::unit(seed), 1.0 / 3.0);
+    return float3(r * sin(phi) * cos(theta), r * sin(phi) * sin(theta), r * cos(phi));
 }
 
 public float3 bias_vector(float3 vec, float3 vec_origin, float3 bias_point, float k) {
@@ -55,18 +48,19 @@ public float3 any_perpendicular(float3 n) {
 public float3 bary_interpolate(float3 v0, float3 v1, float3 v2, float2 bary) {
     return v0 * (1.0 - bary.x - bary.y) + v1 * bary.x + v2 * bary.y;
 }
-public float schlick_weight(float cos_theta, float p) {
-    float m = saturate(1.0 - cos_theta);
-    return pow(m, p);
-}
 
 public float schlick_weight(float cos_theta) {
     float m = saturate(1.0 - cos_theta);
-    return pow(m, 5);
+    return m*m*m*m*m;
+}
+
+public float r0(float ior) {
+    let n  = (1.0 - ior) / (1.0 + ior);
+    return n * n;
 }
 
 public T fresnel<T : IFloat>(T f0, float cos_theta) {
-    return f0 + (T(1.0) - f0) * T(pow(1.0 - cos_theta, 5.0));
+    return f0 + (T(1.0) - f0) * T(schlick_weight(cos_theta));
 }
 
 public float luminance(float3 c) {

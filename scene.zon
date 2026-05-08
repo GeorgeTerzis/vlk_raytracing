@@ -1,7 +1,7 @@
 .{
     .settings = .{
         .resolution = .{ 1440, 1440 },
-        .render_tile = .{ 500, 500 },
+        .render_tile = .{ 620, 620 },
         // .noise_threshold = 0.001,
     },
 

@@ -57,20 +57,20 @@ public struct VNDF {
         return a2 / (PI * denom * denom);
     }
 
-    public static float sample_pdf(float3 wo, float3 wi, float3 wm, float a2) {
-        let NoV = max(wo.y, 1e-4);
-        let NoL = wi.y;
+    // public static float sample_pdf(float3 wo, float3 wi, float3 wm, float a) {
+    //     let NoV = max(wo.y, 1e-4);
+    //     let NoL = wi.y;
 
-        if (NoL <= 0.0f)
-            return 0.0f;
+    //     if (NoL <= 0.0f)
+    //         return 0.0f;
 
-        float VoH = max(dot(wo, wm), 1e-5);
+    //     float VoH = max(dot(wo, wm), 1e-5);
 
-        float D = ggx_D(wm, a2);
-        float G1 = SmithGGXMasking(wo, wo, a2);
+    //     float D = ggx_D(wm, a);
+    //     float G1 = SmithGGXMasking(wo, wo, a*a);
 
-        return (D * G1) / (NoV * 4.0f);
-    }
+    //     return (D * G1) / (NoV * 4.0f);
+    // }
 
     static public float SmithGGXMasking(float3 wi, float3 wo, float a2) {
         float dotNL = (BsdfNDot(wi));
@@ -109,9 +109,26 @@ public struct Transmission : Lobe {
     public float k = 1.0;
 
     float3 eval(float3 view, float3 light_dir, Surface surface) {
-        return float3(0);
-    }
+        let is_backface = surface.is_backface;
+        var eta = is_backface ? ior : (1.0 / ior);
+        let cos_theta = min(dot(view, surface.normal), 1.0);
+        let sin_theta = sqrt(max(0.0, 1.0 - cos_theta * cos_theta));
+        let R0 = r0(ior);
+        let F = fresnel(R0, cos_theta);
+        let cannot_refract = eta * sin_theta > 1.0;
 
+        // determine which side light_dir is on
+        let is_reflection = dot(light_dir, surface.normal) > 0.0;
+
+        if (cannot_refract || is_reflection) {
+            let t = (ior - 1.0) / (1.0 + ior);
+            let F0 = t * t * color;
+            let ggx = GGXLobe(F0, roughness);
+            return ggx.eval(view, light_dir, surface) * F;
+        } else {
+            return float3(0);
+        }
+    }
     LobeResult sample_lobe(float3 view, Surface surface, float2 u, inout uint seed) {
         let I = normalize(-view);
         let is_backface = surface.is_backface;
@@ -120,24 +137,25 @@ public struct Transmission : Lobe {
 
         let cos_theta = min(dot(-I, surface.normal), 1.0);
         let sin_theta = sqrt(max(0.0, 1.0 - cos_theta * cos_theta));
-        let R0 = pow((1.0 - ior) / (1.0 + ior), 2.0);
+        let R0 = r0(ior);
         let F = fresnel(R0, cos_theta);
         let cannot_refract = eta * sin_theta > 1.0;
         let should_reflect = cannot_refract || (random::unit(seed) < F);
 
         if (should_reflect) {
-            let F0 = pow((ior - 1.0) / (1.0 + ior), 2.0)*color;
+            let t = (ior - 1.0) / (1.0 + ior);
+            let F0 = t * t * color;
             let ggx = GGXLobe(F0, roughness);
             var result = ggx.sample_lobe(view, surface, u, seed);
             result.throughput /= F;
             return result;
             // float3 reflected = reflect(I, surface.normal);
-            // reflected = normalize(reflected + cosine_hemisphere(reflected, seed) * roughness);
-            // return {color, reflected};
+            // reflected = normalize(reflected + cosine_hemisphere(reflected, seed) *
+            // roughness); return {color, reflected};
         } else {
             var refracted = refract(I, surface.normal, eta);
             let noise = cosine_hemisphere(refracted, seed) * roughness;
-            return LobeResult((1-F)*color, normalize(refracted + noise));
+            return LobeResult((1 - F) * color, normalize(refracted + noise));
         }
     }
 };
@@ -161,7 +179,8 @@ struct DiffuseLobe : Lobe {
 
         static float3
         Fsheen(Surface surface, float3 color, float tint, float HoV, float NoV) {
-            return Csheen(color, tint) * pow(1 - HoV, 2) * NoV;
+            let __HoV =  1- HoV;
+            return Csheen(color, tint) * __HoV * __HoV  * NoV;
         }
     };
 
@@ -174,7 +193,8 @@ struct DiffuseLobe : Lobe {
     }
 
     static float Fd_90(float roughness, float3 half, float3 dir) {
-        return (1.0 / 2.0) + 2 * roughness * pow(dot(dir, half), 2);
+        let DoH = dot(dir, half);
+        return (1.0 / 2.0) + 2 * roughness * DoH * DoH;
     }
     static float Fd(float roughness, float3 n, float3 w, float3 h, float3 wo) {
         float ndw = abs(dot(n, w));
@@ -194,7 +214,8 @@ struct DiffuseLobe : Lobe {
     }
 
     static float Fss_90(float roughness, float3 view, float3 half) {
-        return roughness * pow(dot(half, view), 2);
+        let HoV = dot(half, view);
+        return roughness * HoV*HoV;
     }
     static float Fss(float3 normal, float roughness, float3 w, float3 view, float3 half) {
         return 1 + (1 + (Fss_90(roughness, view, half) - 1) * (1 - dot(normal, w)));
@@ -220,21 +241,15 @@ struct DiffuseLobe : Lobe {
 
         let diffuse =
             diffuse_bsdf(color, roughness, surface.normal, view, light_dir, half);
-        let subsurface = subsurface_bsdf(float3(1, 0, 0),
-                                         roughness,
-                                         surface.normal,
-                                         view,
-                                         light_dir,
-                                         half);
+        let subsurface =
+            subsurface_bsdf(color, roughness, surface.normal, view, light_dir, half);
 
         let HoV = dot(half, view);
         let NoV = dot(surface.normal, view);
 
         let sheen = Sheen::Fsheen(surface, color, sheen_tint, HoV, NoV);
 
-        let f = (((1 - subsurface_weight) * diffuse) + (subsurface_weight * subsurface) +
-                 (sheen_weight * sheen)) /
-                PI;
+        let f = (diffuse + (sheen_weight * sheen)) / PI;
         return f * NoL;
     }
 
@@ -267,7 +282,7 @@ struct GGXLobe : Lobe {
     float weight = 1;
 
     float3 eval(float3 view, float3 light_dir, Surface surface) {
-        let a = max(roughness * roughness, 0.0);
+        let a = max(roughness * roughness, 1e-4);
         let a2 = a * a;
 
         let wo_local = to_local_vndf(view, surface);
@@ -282,9 +297,9 @@ struct GGXLobe : Lobe {
 
         let VoH = max(dot(wo_local, wm_local), 1e-5);
         let F = fresnel(F0, VoH);
-        let D = VNDF::ggx_D(wm_local, a);
+        let D = VNDF::ggx_D(wm_local, a2);
         let G2 = VNDF::SmithGGXMaskingShadowing(wi_local, wo_local, a2);
-        return F * D * G2 / (4.0 * NoV * NoL) * weight;
+        return (F * D * G2 / (4.0 * NoV * NoL)) * weight;
     }
 
     LobeResult sample_lobe(float3 view, Surface surface, float2 u, inout uint seed) {
@@ -324,7 +339,6 @@ public struct Principled : Material {
     LobeWeights compute_weights() {
         let F0 = lerp(float3(0.04), color, metallic);
         let et = ptransmission.weight;
-        // let et = 0;
 
         let es = (1 - et) * luminance(F0);
         let ed = (1 - et) * (1.0 - metallic);
@@ -340,26 +354,19 @@ public struct Principled : Material {
         };
     }
 
-    public float3 eval(float3 view, float3 light_dir, Surface surface) {
-        let w = compute_weights();
-        let diffuse_lobe = DiffuseLobe(color,
-                                       roughness,
-                                       pdiffuse.subsurface,
-                                       psheen.tint,
-                                       psheen.weight);
-        let spec_lobe = GGXLobe(w.F0, roughness);
-        let coat_lobe = GGXLobe(Clearcoat::R0(1.5), Clearcoat::ag(pclearcoat.gloss));
-        let t_lobe = Transmission(color, ptransmission.ior, ptransmission.roughness);
-        return w.pd * diffuse_lobe.eval(view, light_dir, surface) +
-               w.pm * spec_lobe.eval(view, light_dir, surface) +
-               w.pc * coat_lobe.eval(view, light_dir, surface) +
-               w.pt * t_lobe.eval(view, light_dir, surface);
-    }
+public float3 eval(float3 view, float3 light_dir, Surface surface) {
+    let w = compute_weights();
+    let diffuse_lobe = DiffuseLobe(color, roughness, pdiffuse.subsurface, psheen.tint, psheen.weight);
+    let metallic_lobe = GGXLobe(w.F0, roughness);
+    let clearcoat_lobe = GGXLobe(Clearcoat::R0(1.5), Clearcoat::ag(pclearcoat.gloss), pclearcoat.weight);
+    let transmission_lobe = Transmission(color, ptransmission.ior, ptransmission.roughness);
 
-    public struct conductor_params {
-        public float3 eta;
-        public float3 k;
-    };
+    let d = diffuse_lobe.eval(view, light_dir, surface);
+    let m = metallic_lobe.eval(view, light_dir, surface);
+    let c = clearcoat_lobe.eval(view, light_dir, surface);
+    let t = transmission_lobe.eval(view, light_dir, surface);
+    return w.pd * d + w.pm * m + w.pc * c ;
+}
 
     public struct diffuse_pararms {
         public float subsurface = 0;
@@ -381,7 +388,7 @@ public struct Principled : Material {
         public float roughness = 0;
     };
 
-    public float3 color = 1;
+    public float3 color = 0.8;
     public float roughness = 0.5;
     public float metallic = 0;
 
@@ -390,7 +397,7 @@ public struct Principled : Material {
     public clearcoat_params pclearcoat;
     public transmission_params ptransmission;
 
-    public void scatter(Surface surface, inout State state) {
+    public LobeResult scatter(Surface surface, inout State state) {
         let view = -state.ray.Direction;
 
         let w = compute_weights();
@@ -406,24 +413,29 @@ public struct Principled : Material {
                                    psheen.tint,
                                    psheen.weight);
             result = lobe.sample_lobe(view, surface, u, state.seed);
-            result.throughput /= w.pd;
+            if (w.pd > 1e-5)
+                result.throughput /= w.pd;
         } else if (r < w.pd + w.pm) {
             let lobe = GGXLobe(w.F0, roughness);
             result = lobe.sample_lobe(view, surface, u, state.seed);
             result.throughput /= w.pm;
+            if (w.pm > 1e-5)
+                result.throughput /= w.pm;
+
         } else if (r < w.pd + w.pm + w.pc) {
             let lobe = GGXLobe(Clearcoat::R0(1.5),
                                Clearcoat::ag(pclearcoat.gloss),
                                pclearcoat.weight);
             result = lobe.sample_lobe(view, surface, u, state.seed);
-            result.throughput /= w.pc;
+            if (w.pc > 1e-5)
+                result.throughput /= w.pc;
         } else {
             let lobe = Transmission(color, ptransmission.ior, ptransmission.roughness);
             result = lobe.sample_lobe(view, surface, u, state.seed);
-            result.throughput /= w.pt;
+            if (w.pt > 1e-5)
+                result.throughput /= w.pt;
         }
         result.throughput = min(result.throughput, float3(10.0));
-        state.throughput *= result.throughput;
-        state.ray.Direction = result.direction;
+        return result;
     }
 };
