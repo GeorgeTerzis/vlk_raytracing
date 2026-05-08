@@ -1,4 +1,4 @@
-This project uses zig `0.15.2` for now
+This project uses zig `0.16.0` for now
 
 <img src="images/render.png" width="500">
 
