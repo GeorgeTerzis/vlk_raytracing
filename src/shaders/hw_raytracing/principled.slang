@@ -4,7 +4,6 @@ import lobe;
 import surface;
 import math;
 import rand;
-import material;
 import state;
 
 float3 to_local_vndf(float3 v, float3 n, float3 t, float3 b) {
@@ -57,54 +56,48 @@ public struct VNDF {
         return a2 / (PI * denom * denom);
     }
 
-    // public static float sample_pdf(float3 wo, float3 wi, float3 wm, float a) {
-    //     let NoV = max(wo.y, 1e-4);
-    //     let NoL = wi.y;
+    public static float sample_pdf(float3 wo, float3 wi, float3 wm, float a) {
+        let NoV = max(wo.y, 1e-4);
 
-    //     if (NoL <= 0.0f)
-    //         return 0.0f;
+        let NoL = wi.y;
+        if (NoL <= 0.0f)
+            return 0.0f;
 
-    //     float VoH = max(dot(wo, wm), 1e-5);
+        float VoH = max(dot(wo, wm), 1e-5);
 
-    //     float D = ggx_D(wm, a);
-    //     float G1 = SmithGGXMasking(wo, wo, a*a);
+        float D = ggx_D(wm, a);
+        float G1 = SmithGGXMasking(NoV, a * a);
 
-    //     return (D * G1) / (NoV * 4.0f);
-    // }
-
-    static public float SmithGGXMasking(float3 wi, float3 wo, float a2) {
-        float dotNL = (BsdfNDot(wi));
-        float dotNV = (BsdfNDot(wo));
-
-        float denomC = sqrt(a2 + (1.0f - a2) * dotNV * dotNV) + dotNV;
-        return 2.0f * dotNV / denomC;
+        return (D * G1) / (NoV * 4.0f);
     }
 
-    static public float SmithGGXMaskingShadowing(float3 wi, float3 wo, float a2) {
-        float dotNL = max(BsdfNDot(wi), 1e-5);
-        float dotNV = max(BsdfNDot(wo), 1e-5);
-        float denomA = dotNV * sqrt(a2 + (1.0f - a2) * dotNL * dotNL);
-        float denomB = dotNL * sqrt(a2 + (1.0f - a2) * dotNV * dotNV);
+    static public float SmithGGXMasking(float NoV, float a2) {
+        let denomC = sqrt(a2 + (1.0f - a2) * NoV * NoV) + NoV;
+        return 2.0f * NoV / denomC;
+    }
 
-        return 2.0f * dotNL * dotNV / (denomA + denomB);
+    static public float SmithGGXMaskingShadowing(float NoL, float NoV, float a2) {
+        let denomA = NoV * sqrt(a2 + (1.0f - a2) * NoL * NoL);
+        let denomB = NoL * sqrt(a2 + (1.0f - a2) * NoV * NoV);
+        return 2.0f * NoL * NoV / (denomA + denomB);
     }
 
     static public float3 GgxVndf(float3 wo, float roughness, float2 u) {
-        float3 v = normalize(float3(wo.x * roughness, wo.y, wo.z * roughness));
-        float3 t1 = (v.y < 0.999f) ? normalize(cross(v, YAxis_)) : XAxis_;
-        float3 t2 = cross(t1, v);
-        float a = 1.0f / (1.0f + v.y);
-        float r = sqrt(u.x);
-        float phi = (u.y < a) ? (u.y / a) * PI : PI + (u.y - a) / (1.0f - a) * PI;
-        float p1 = r * cos(phi);
-        float p2 = r * sin(phi) * ((u.y < a) ? 1.0f : v.y);
-        float3 n = p1 * t1 + p2 * t2 + sqrt(max(0.0f, 1.0f - p1 * p1 - p2 * p2)) * v;
+        let v = normalize(float3(wo.x * roughness, wo.y, wo.z * roughness));
+        let t1 = (v.y < 0.999f) ? normalize(cross(v, YAxis_)) : XAxis_;
+        let t2 = cross(t1, v);
+        let a = 1.0f / (1.0f + v.y);
+        let r = sqrt(u.x);
+        let phi = (u.y < a) ? (u.y / a) * PI : PI + (u.y - a) / (1.0f - a) * PI;
+        let p1 = r * cos(phi);
+        let p2 = r * sin(phi) * ((u.y < a) ? 1.0f : v.y);
+        let n = p1 * t1 + p2 * t2 + sqrt(max(0.0f, 1.0f - p1 * p1 - p2 * p2)) * v;
         return normalize(float3(roughness * n.x, max(0.0f, n.y), roughness * n.z));
     }
 };
 public struct Transmission : Lobe {
     public float3 color;
-    public float ior = 1.4;
+    public float ior = 1.5;
     public float roughness = 0.0;
     public float k = 1.0;
 
@@ -117,7 +110,6 @@ public struct Transmission : Lobe {
         let F = fresnel(R0, cos_theta);
         let cannot_refract = eta * sin_theta > 1.0;
 
-        // determine which side light_dir is on
         let is_reflection = dot(light_dir, surface.normal) > 0.0;
 
         if (cannot_refract || is_reflection) {
@@ -149,9 +141,6 @@ public struct Transmission : Lobe {
             var result = ggx.sample_lobe(view, surface, u, seed);
             result.throughput /= F;
             return result;
-            // float3 reflected = reflect(I, surface.normal);
-            // reflected = normalize(reflected + cosine_hemisphere(reflected, seed) *
-            // roughness); return {color, reflected};
         } else {
             var refracted = refract(I, surface.normal, eta);
             let noise = cosine_hemisphere(refracted, seed) * roughness;
@@ -179,8 +168,8 @@ struct DiffuseLobe : Lobe {
 
         static float3
         Fsheen(Surface surface, float3 color, float tint, float HoV, float NoV) {
-            let __HoV =  1- HoV;
-            return Csheen(color, tint) * __HoV * __HoV  * NoV;
+            let __HoV = 1 - HoV;
+            return Csheen(color, tint) * __HoV * __HoV * NoV;
         }
     };
 
@@ -215,7 +204,7 @@ struct DiffuseLobe : Lobe {
 
     static float Fss_90(float roughness, float3 view, float3 half) {
         let HoV = dot(half, view);
-        return roughness * HoV*HoV;
+        return roughness * HoV * HoV;
     }
     static float Fss(float3 normal, float roughness, float3 w, float3 view, float3 half) {
         return 1 + (1 + (Fss_90(roughness, view, half) - 1) * (1 - dot(normal, w)));
@@ -281,53 +270,79 @@ struct GGXLobe : Lobe {
     float roughness;
     float weight = 1;
 
-    float3 eval(float3 view, float3 light_dir, Surface surface) {
-        let a = max(roughness * roughness, 1e-4);
+    float3 brdf(float3 wi_local, float3 wo_local, float3 wm_local, float a) {
         let a2 = a * a;
 
-        let wo_local = to_local_vndf(view, surface);
-        let wi_local = to_local_vndf(light_dir, surface);
-        let wm_local = normalize(wo_local + wi_local);
-
-        let NoL = max(BsdfNDot(wi_local), 1e-5);
         let NoV = max(BsdfNDot(wo_local), 1e-5);
-
+        let NoL = max(BsdfNDot(wi_local), 1e-5);
         if (NoL <= 0.0 || NoV <= 0.0)
             return float3(0);
 
         let VoH = max(dot(wo_local, wm_local), 1e-5);
         let F = fresnel(F0, VoH);
         let D = VNDF::ggx_D(wm_local, a2);
-        let G2 = VNDF::SmithGGXMaskingShadowing(wi_local, wo_local, a2);
-        return (F * D * G2 / (4.0 * NoV * NoL)) * weight;
+        let G2 = VNDF::SmithGGXMaskingShadowing(NoL, NoV, a2);
+        let result = (F * D * G2 / (4.0 * NoV * NoL)) * weight;
+
+        return result;
+    }
+
+    float3 eval(float3 view, float3 light_dir, Surface surface) {
+        let a = max(roughness * roughness, 1e-4);
+
+        let wo_local = to_local_vndf(view, surface);
+        let wi_local = to_local_vndf(light_dir, surface);
+        let wm_local = normalize(wo_local + wi_local);
+
+        return brdf(wi_local, wo_local, wm_local, a);
     }
 
     LobeResult sample_lobe(float3 view, Surface surface, float2 u, inout uint seed) {
         let a = max(roughness * roughness, 0.0);
-        let a2 = a * a;
 
         let wo_local = to_local_vndf(view, surface);
         let wm_local = VNDF::GgxVndf(wo_local, a, u);
         let wi_local = reflect(-wo_local, wm_local);
 
         let wi_world = to_world_vndf(wi_local, surface);
-
-        if (BsdfNDot(wi_local) <= 1e-5f)
+        let NoL = BsdfNDot(wi_local);
+        if (NoL <= 1e-5f)
             return { float3(0), wi_world };
 
         let VoH = max(dot(wi_local, wm_local), 1e-5);
-        let F = fresnel(F0, VoH);
+        let NoV = max(BsdfNDot(wo_local), 1e-5);
 
-        let G1 = VNDF::SmithGGXMasking(wi_local, wo_local, a2);
-        let G2 = VNDF::SmithGGXMaskingShadowing(wi_local, wo_local, a2);
+        // let result = brdf(wi_local, wo_local, wm_local, a) /
+        //              VNDF::sample_pdf(wo_local, wi_local, wm_local, a);
+        // let throughput = result;
+
+        // this will give less fireflies
+
+        let F = fresnel(F0, VoH);
+        let a2 = a * a;
+        let G1 = VNDF::SmithGGXMasking(NoV, a2);
+        let G2 = VNDF::SmithGGXMaskingShadowing(NoL, NoV, a2);
         let throughput = (F * (G2 / G1)) * weight;
 
         return { throughput, wi_world };
     }
 };
 
+struct EmissionLobe : Lobe {
+    float3 color;
+    float strength;
+
+    float3 eval(float3 view, float3 light_dir, Surface surface) {
+        return color * strength;
+    }
+
+    LobeResult sample_lobe(float3 view, Surface surface, float2 u, inout uint seed) {
+        return {color* strength, 0};
+    }
+};
+
 // https://cseweb.ucsd.edu/~tzli/cse272/wi2022/homework1.pdf
-public struct Principled : Material {
+public struct Principled {
     struct LobeWeights {
         float3 F0;
         float pd;
@@ -354,19 +369,33 @@ public struct Principled : Material {
         };
     }
 
-public float3 eval(float3 view, float3 light_dir, Surface surface) {
-    let w = compute_weights();
-    let diffuse_lobe = DiffuseLobe(color, roughness, pdiffuse.subsurface, psheen.tint, psheen.weight);
-    let metallic_lobe = GGXLobe(w.F0, roughness);
-    let clearcoat_lobe = GGXLobe(Clearcoat::R0(1.5), Clearcoat::ag(pclearcoat.gloss), pclearcoat.weight);
-    let transmission_lobe = Transmission(color, ptransmission.ior, ptransmission.roughness);
-
-    let d = diffuse_lobe.eval(view, light_dir, surface);
-    let m = metallic_lobe.eval(view, light_dir, surface);
-    let c = clearcoat_lobe.eval(view, light_dir, surface);
-    let t = transmission_lobe.eval(view, light_dir, surface);
-    return w.pd * d + w.pm * m + w.pc * c ;
-}
+    public float3 eval(float3 view, float3 light_dir, Surface surface) {
+        let w = compute_weights();
+        let diffuse_lobe = DiffuseLobe(color,
+                                       roughness,
+                                       pdiffuse.subsurface,
+                                       psheen.tint,
+                                       psheen.weight);
+        let d = (w.pd >= 1e-4) ? DiffuseLobe(color,
+                                             roughness,
+                                             pdiffuse.subsurface,
+                                             psheen.tint,
+                                             psheen.weight)
+                                     .eval(view, light_dir, surface)
+                               : 0.0;
+        let m = (w.pm >= 1e-4) ? GGXLobe(w.F0, roughness).eval(view, light_dir, surface)
+                               : 0.0;
+        let c = (w.pc >= 1e-2) ? GGXLobe(Clearcoat::R0(1.5),
+                                         Clearcoat::ag(pclearcoat.gloss),
+                                         pclearcoat.weight)
+                                     .eval(view, light_dir, surface)
+                               : 0.0;
+        let t = (w.pt >= 1e-2)
+                    ? Transmission(color, ptransmission.ior, ptransmission.roughness)
+                          .eval(view, light_dir, surface)
+                    : 0.0;
+        return w.pd * d + w.pm * m + w.pc * c;
+    }
 
     public struct diffuse_pararms {
         public float subsurface = 0;
@@ -397,13 +426,13 @@ public float3 eval(float3 view, float3 light_dir, Surface surface) {
     public clearcoat_params pclearcoat;
     public transmission_params ptransmission;
 
-    public LobeResult scatter(Surface surface, inout State state) {
-        let view = -state.ray.Direction;
+    public LobeResult scatter(Surface surface, float3 ray_dir, inout uint seed) {
+        let view = -ray_dir;
 
         let w = compute_weights();
 
-        let r = random::unit(state.seed);
-        let u = random::f2(state.seed);
+        let r = random::unit(seed);
+        let u = random::f2(seed);
 
         var result = LobeResult(0, 0);
         if (r < w.pd) {
@@ -412,13 +441,12 @@ public float3 eval(float3 view, float3 light_dir, Surface surface) {
                                    pdiffuse.subsurface,
                                    psheen.tint,
                                    psheen.weight);
-            result = lobe.sample_lobe(view, surface, u, state.seed);
+            result = lobe.sample_lobe(view, surface, u, seed);
             if (w.pd > 1e-5)
                 result.throughput /= w.pd;
         } else if (r < w.pd + w.pm) {
             let lobe = GGXLobe(w.F0, roughness);
-            result = lobe.sample_lobe(view, surface, u, state.seed);
-            result.throughput /= w.pm;
+            result = lobe.sample_lobe(view, surface, u, seed);
             if (w.pm > 1e-5)
                 result.throughput /= w.pm;
 
@@ -426,12 +454,12 @@ public float3 eval(float3 view, float3 light_dir, Surface surface) {
             let lobe = GGXLobe(Clearcoat::R0(1.5),
                                Clearcoat::ag(pclearcoat.gloss),
                                pclearcoat.weight);
-            result = lobe.sample_lobe(view, surface, u, state.seed);
+            result = lobe.sample_lobe(view, surface, u, seed);
             if (w.pc > 1e-5)
                 result.throughput /= w.pc;
         } else {
             let lobe = Transmission(color, ptransmission.ior, ptransmission.roughness);
-            result = lobe.sample_lobe(view, surface, u, state.seed);
+            result = lobe.sample_lobe(view, surface, u, seed);
             if (w.pt > 1e-5)
                 result.throughput /= w.pt;
         }
