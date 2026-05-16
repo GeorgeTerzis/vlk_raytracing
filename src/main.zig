@@ -13,7 +13,7 @@ const MousePos = extern struct {
 };
 
 const HW_raytracing_pipeline = struct {
-    pipeline: emma.vlk_raytracing_pipeline,
+    pipeline: emma.vlk_rt_pipeline,
 
     const PC = extern struct {
         const Buffers = struct {
@@ -52,11 +52,11 @@ const HW_raytracing_pipeline = struct {
         allocator: std.mem.Allocator,
         u: *emma.vlk_unit,
         rt_props: *const vk.PhysicalDeviceRayTracingPipelinePropertiesKHR,
-        shader_modules: []const emma.vlk_shader_module,
+        shader_stages: []const emma.vlk_shader_stage,
         is: emma.ImediateSubmit,
     ) !@This() {
         //devilish cast
-        const stages = @as([]const vk.PipelineShaderStageCreateInfo, @ptrCast(shader_modules));
+        const stages = @as([]const vk.PipelineShaderStageCreateInfo, @ptrCast(shader_stages));
 
         // const stages = [_]vk.PipelineShaderStageCreateInfo{
         //     shader_modules[0].info,
@@ -84,11 +84,11 @@ const HW_raytracing_pipeline = struct {
         const push_constant_ranges = [_]vk.PushConstantRange{
             emma.push_constant_range(
                 PC,
-                emma.FlagBuilder(vk.ShaderStageFlags)
-                    .begin("raygen_bit_khr")
-                    .enable("miss_bit_khr")
-                    .enable("closest_hit_bit_khr")
-                    .build(),
+                .{
+                    .raygen_bit_khr = true,
+                    .miss_bit_khr = true,
+                    .closest_hit_bit_khr = true,
+                },
                 0,
             ),
         };
@@ -99,23 +99,21 @@ const HW_raytracing_pipeline = struct {
                     .binding = 0,
                     .descriptor_type = .acceleration_structure_khr,
                     .descriptor_count = 1,
-                    .stage_flags = emma.FlagBuilder(vk.ShaderStageFlags)
-                        .begin("raygen_bit_khr")
-                        .enable("closest_hit_bit_khr")
-                        .build(),
+                    .stage_flags = .{
+                        .raygen_bit_khr = true,
+                        .closest_hit_bit_khr = true,
+                    },
                 },
                 .{
                     .binding = 1,
                     .descriptor_type = .storage_image,
                     .descriptor_count = 1,
-                    .stage_flags = emma.FlagBuilder(vk.ShaderStageFlags)
-                        .begin("raygen_bit_khr")
-                        .build(),
+                    .stage_flags = .{ .raygen_bit_khr = true },
                 },
             },
         };
 
-        const pipeline = try emma.vlk_raytracing_pipeline.init(
+        const pipeline = try emma.vlk_rt_pipeline.init(
             allocator,
             u,
             rt_props,
@@ -244,16 +242,6 @@ pub fn main(init: std.process.Init) !void {
 
     const allocator: std.mem.Allocator = std.heap.c_allocator;
     var key_state = std.mem.zeroes([sdl.c.SDL_SCANCODE_COUNT]bool);
-
-    // var settings = blk: {
-    //     const file = try std.fs.cwd().openFile("./settings.zon", .{});
-    //     defer file.close();
-
-    //     const src = try emma.readfile_allocZ(allocator, file);
-    //     const result = try config.parse(allocator, src);
-
-    //     break :blk result;
-    // };
 
     const scene_filepath = if (builtin.mode == .Debug) "./scene_lite.zon" else "./scene.zon";
     // const scene_filepath = "./scene.zon";
@@ -531,51 +519,49 @@ pub fn main(init: std.process.Init) !void {
     const spirv = try emma.readfile_alloc(allocator, io, file);
     defer allocator.free(spirv);
 
-    const rt_modules = [_]emma.vlk_shader_module{
-        try emma.vlk_shader_module.init(
-            &u.device,
+    const hw_rt_module = try u.device.logical_device.createShaderModule(
+        &.{
+            .code_size = spirv.len,
+            .p_code = @ptrCast(@alignCast(spirv.ptr)),
+        },
+        null,
+    );
+    defer u.device.logical_device.destroyShaderModule(hw_rt_module, null);
+    const hw_rt_stages = [_]emma.vlk_shader_stage{
+        emma.vlk_shader_stage.init(
             .{ .raygen_bit_khr = true },
             "raygen_entry",
-            spirv,
+            hw_rt_module,
         ),
-        try emma.vlk_shader_module.init(
-            &u.device,
+        emma.vlk_shader_stage.init(
             .{ .miss_bit_khr = true },
             "miss_entry",
-            spirv,
+            hw_rt_module,
         ),
-        try emma.vlk_shader_module.init(
-            &u.device,
+        emma.vlk_shader_stage.init(
             .{ .closest_hit_bit_khr = true },
             "closest_hit_entry",
-            spirv,
+            hw_rt_module,
         ),
-
-        try emma.vlk_shader_module.init(
-            &u.device,
+        emma.vlk_shader_stage.init(
             .{ .closest_hit_bit_khr = true },
             "shadow_closest_hit_entry",
-            spirv,
+            hw_rt_module,
         ),
-        try emma.vlk_shader_module.init(
-            &u.device,
+        emma.vlk_shader_stage.init(
             .{ .miss_bit_khr = true },
             "shadow_miss_entry",
-            spirv,
+            hw_rt_module,
         ),
     };
-    defer {
-        for (rt_modules) |module| {
-            module.deinit(&u.device);
-        }
-    }
 
-    var rt = try HW_raytracing_pipeline.init(allocator, &u, &rt_props, &rt_modules, is);
+    var rt = try HW_raytracing_pipeline.init(allocator, &u, &rt_props, &hw_rt_stages, is);
     defer rt.deinit(allocator, &u);
 
     std.debug.print("Created pipeline successfully \n", .{});
     //
 
+    var resource_manager = emma.Resource_Manager.init();
     {
         const descriptor_sizes = [_]vk.DescriptorPoolSize{
             .{ .descriptor_count = 10, .type = .combined_image_sampler },
@@ -593,103 +579,32 @@ pub fn main(init: std.process.Init) !void {
         //create texture
         const render_texture_width = scene_config.settings.resolution[0];
         const render_texture_height = scene_config.settings.resolution[1];
+        const render_extent = emma.vk.Extent3D{
+            .width = render_texture_width,
+            .height = render_texture_height,
+            .depth = 1,
+        };
 
-        const render_texture = try emma.vlk_image.init(
-            &u.vma,
-            &u.device,
-            .r32g32b32a32_sfloat,
-            .{
-                .transfer_dst_bit = true,
-                .transfer_src_bit = true,
-                .sampled_bit = true,
-                .storage_bit = true,
-            },
-            .{
-                .color_bit = true,
-            },
-            .{
-                .width = render_texture_width,
-                .height = render_texture_height,
-                .depth = 1,
-            },
-            false,
-        );
-        {
-            try is.begin();
+        const render_texture = try emma.vlk_image.init(&u.vma, &u.device, .r32g32b32a32_sfloat, .{
+            .transfer_dst_bit = true,
+            .transfer_src_bit = true,
+            .sampled_bit = true,
+            .storage_bit = true,
+        }, .{
+            .color_bit = true,
+        }, render_extent, false);
 
-            render_texture.cmd_transition(
-                is.cmd,
-                .{ .top_of_pipe_bit = true },
-                .{ .clear_bit = true },
-                .{},
-                .{ .transfer_write_bit = true },
-                .undefined,
-                .general,
-                null,
-            );
-
-            const ranges = [_]vk.ImageSubresourceRange{
-                render_texture.full_subresource_range(),
-            };
-            is.cmd.clearColorImage(
-                render_texture.handle,
-                .general,
-                @ptrCast(&vk.ClearColorValue{ .float_32 = .{ 0, 0, 0, 1 } }),
-                &ranges,
-            );
-
-            const clear_barrier = vk.ImageMemoryBarrier2{
-                .src_stage_mask = .{ .clear_bit = true },
-                .src_access_mask = .{ .transfer_write_bit = true },
-                .dst_stage_mask = .{ .ray_tracing_shader_bit_khr = true },
-                .dst_access_mask = .{
-                    .shader_write_bit = true,
-                    .shader_read_bit = true,
-                },
-                .old_layout = .general,
-                .new_layout = .general,
-                .src_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
-                .dst_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
-                .image = render_texture.handle,
-                .subresource_range = render_texture.full_subresource_range(),
-            };
-
-            is.cmd.pipelineBarrier2(&.{
-                .image_memory_barrier_count = 1,
-                .p_image_memory_barriers = @ptrCast(&clear_barrier),
-            });
-
-            try is.submit_and_wait(u.device.queue, u.device.logical_device);
-        }
         defer render_texture.deinit(&u.vma, &u.device);
-        // {
-        //     const mip_count = 6;
-        //     const mips = try allocator.alloc(emma.vlk_image, mip_count);
-        //     defer allocator.free(mips);
-        //     for (mips, 1..) |mip, i| {
-        //         _ = i;
-        //         mip = try emma.vlk_image.init(
-        //             &u.vma,
-        //             &u.device,
-        //             .r32g32b32a32_sfloat,
-        //             .{
-        //                 .transfer_dst_bit = true,
-        //                 .transfer_src_bit = true,
-        //                 .sampled_bit = true,
-        //                 .storage_bit = true,
-        //             },
-        //             .{
-        //                 .color_bit = true,
-        //             },
-        //             .{
-        //                 .width = render_texture_width,
-        //                 .height = render_texture_height,
-        //                 .depth = 1,
-        //             },
-        //             false,
-        //         );
-        //     }
-        // }
+        const render_texture_resource = emma.Resource{
+            .handle = 100,
+            .data = .{ .texture = &render_texture },
+        };
+        try resource_manager.last_state.put(allocator, render_texture_resource.handle, emma.Resource.Access{
+            .resource = &render_texture_resource,
+            .stage = .{ .top_of_pipe_bit = true },
+            .access = .{},
+            .layout = .undefined,
+        });
 
         const alloc_info = vk.DescriptorSetAllocateInfo{
             .descriptor_pool = descriptor_pool.handle,
@@ -715,12 +630,12 @@ pub fn main(init: std.process.Init) !void {
                 .{
                     .dst_set = sets[0],
                     .dst_binding = 0,
-                    .descriptor_count = 1,
                     .dst_array_element = 0,
-                    .p_texel_buffer_view = undefined,
+                    .descriptor_count = 1,
                     .descriptor_type = .acceleration_structure_khr,
-                    .p_image_info = undefined,
                     .p_buffer_info = undefined,
+                    .p_image_info = undefined,
+                    .p_texel_buffer_view = undefined,
                     .p_next = &tlas_descriptor_info,
                 },
                 .{
@@ -801,6 +716,49 @@ pub fn main(init: std.process.Init) !void {
             var avg_n: f64 = 0.0;
 
             var done = false;
+
+            const swapchain_resources = try allocator.alloc(emma.Resource, swapchain.images.len);
+            for (swapchain.images, 0..) |img, i| {
+                _ = img;
+                swapchain_resources[i] = emma.Resource{
+                    .handle = @intCast(i),
+                    .data = .{ .texture = &swapchain.images[i] },
+                };
+            }
+
+            var initial_pass = emma.Pass.init();
+            {
+                try initial_pass.writes.put(
+                    allocator,
+                    render_texture_resource.handle,
+                    emma.Resource.Access{
+                        .resource = &render_texture_resource,
+                        .stage = .{ .top_of_pipe_bit = true },
+                        .access = .{},
+                        .layout = .undefined,
+                    },
+                );
+            }
+            var clear_pass = try emma.Clear_pass.init(allocator, &render_texture_resource);
+            var rt_pass = try emma.HW_rt_pass.init(allocator, &render_texture_resource);
+
+            const blit_passes = try allocator.alloc(emma.Blit_pass, swapchain.images.len);
+            const present_passes = try allocator.alloc(emma.Present_pass, swapchain.images.len);
+
+            for (0..swapchain.images.len) |i| {
+                blit_passes[i] = try emma.Blit_pass.init(allocator, &swapchain_resources[i], &render_texture_resource);
+                present_passes[i] = try emma.Present_pass.init(allocator, &swapchain_resources[i]);
+            }
+
+            for (0..swapchain.images.len) |i| {
+                try resource_manager.last_state.put(allocator, swapchain_resources[i].handle, emma.Resource.Access{
+                    .resource = &swapchain_resources[i],
+                    .stage = .{ .top_of_pipe_bit = true },
+                    .access = .{},
+                    .layout = .undefined,
+                });
+            }
+
             while (!quit) {
                 // Event handling
                 {
@@ -813,7 +771,26 @@ pub fn main(init: std.process.Init) !void {
                             },
                             .key_down => |key| key_state[@intFromEnum(key.scancode.?)] = true,
                             .key_up => |key| key_state[@intFromEnum(key.scancode.?)] = false,
-                            .window_resized => |e| swapchain.resize(&u, @intCast(e.width), @intCast(e.height)),
+                            .window_resized => |e| {
+                                swapchain.resize(&u, @intCast(e.width), @intCast(e.height));
+                                // update swapchain resources to point to new images
+                                for (swapchain.images, 0..) |_, i| {
+                                    swapchain_resources[i].data.texture = &swapchain.images[i];
+                                }
+
+                                for (0..swapchain.images.len) |i| {
+                                    try resource_manager.last_state.put(allocator, swapchain_resources[i].handle, emma.Resource.Access{
+                                        .resource = &swapchain_resources[i],
+                                        .stage = .{ .top_of_pipe_bit = true },
+                                        .access = .{},
+                                        .layout = .undefined,
+                                    });
+                                    // blit_passes[i].pass.deinit(allocator);
+                                    // present_passes[i].pass.deinit(allocator);
+                                    blit_passes[i] = try emma.Blit_pass.init(allocator, &swapchain_resources[i], &render_texture_resource);
+                                    present_passes[i] = try emma.Present_pass.init(allocator, &swapchain_resources[i]);
+                                }
+                            },
                             else => {},
                         }
                     }
@@ -840,6 +817,8 @@ pub fn main(init: std.process.Init) !void {
                     try emma.vlk_cmd_begin_one(frame.cmd);
 
                     if (flush_render_texture) {
+                        try resource_manager.cmd_emit_barriers(allocator, &clear_pass.pass, frame.cmd);
+
                         accumilation_frame_counter = 0;
                         flush_render_texture = false;
 
@@ -850,29 +829,11 @@ pub fn main(init: std.process.Init) !void {
                             @ptrCast(&vk.ClearColorValue{ .float_32 = .{ 0, 0, 0, 1 } }),
                             &ranges,
                         );
-
-                        const clear_barrier = vk.ImageMemoryBarrier2{
-                            .src_stage_mask = .{ .clear_bit = true },
-                            .src_access_mask = .{ .transfer_write_bit = true },
-                            .dst_stage_mask = .{ .ray_tracing_shader_bit_khr = true },
-                            .dst_access_mask = .{
-                                .shader_write_bit = true,
-                                .shader_read_bit = true,
-                            },
-                            .old_layout = .general,
-                            .new_layout = .general,
-                            .src_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
-                            .dst_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
-                            .image = render_texture.handle,
-                            .subresource_range = render_texture.full_subresource_range(),
-                        };
-                        frame.cmd.pipelineBarrier2(&.{
-                            .image_memory_barrier_count = 1,
-                            .p_image_memory_barriers = @ptrCast(&clear_barrier),
-                        });
                     }
                     // rendering
                     if (!done) {
+                        try resource_manager.cmd_emit_barriers(allocator, &rt_pass.pass, frame.cmd);
+
                         frame.cmd.bindPipeline(.ray_tracing_khr, rt.pipeline.pipeline.handle);
                         frame.cmd.bindDescriptorSets(
                             .ray_tracing_khr,
@@ -917,8 +878,6 @@ pub fn main(init: std.process.Init) !void {
                             if (tiles[0].pos == 0)
                                 tiles[1] = tiles[1].next(tile_pixel_strides[1], render_texture_height);
                         }
-                    } else {
-                        // quit = true;
                     }
 
                     const frame_done = (tiles[0].pos == 0 and tiles[1].pos == 0);
@@ -934,14 +893,14 @@ pub fn main(init: std.process.Init) !void {
                         avg_n += 1;
                         avg_ms += (@as(f64, @floatFromInt(last_present_diff)) - avg_ms) / avg_n;
 
-                        const result = try u.device.logical_device.acquireNextImageKHR(
+                        const next_swapchain_image = try u.device.logical_device.acquireNextImageKHR(
                             swapchain.handle,
                             std.math.maxInt(u64),
                             acquire_semaphore,
                             .null_handle,
                         );
 
-                        const image_index = result.image_index;
+                        const image_index = next_swapchain_image.image_index;
                         const prev = image_available[image_index];
                         image_available[image_index] = acquire_semaphore;
                         acquire_semaphore = if (prev != .null_handle) prev else try u.device.logical_device.createSemaphore(&.{}, null);
@@ -950,26 +909,7 @@ pub fn main(init: std.process.Init) !void {
 
                         // Blit
                         {
-                            render_texture.cmd_transition(
-                                frame.cmd,
-                                .{ .ray_tracing_shader_bit_khr = true },
-                                .{ .all_transfer_bit = true },
-                                .{ .shader_write_bit = true },
-                                .{ .transfer_read_bit = true },
-                                .general, //from
-                                .transfer_src_optimal, //to
-                                null,
-                            );
-                            swapchain_image.cmd_transition(
-                                frame.cmd,
-                                .{},
-                                .{ .all_transfer_bit = true },
-                                .{},
-                                .{ .transfer_write_bit = true },
-                                .undefined,
-                                .transfer_dst_optimal,
-                                null,
-                            );
+                            try resource_manager.cmd_emit_barriers(allocator, &blit_passes[image_index].pass, frame.cmd);
                             {
                                 const blit_region = vk.ImageBlit2{
                                     .src_subresource = .{
@@ -1013,27 +953,11 @@ pub fn main(init: std.process.Init) !void {
                                     },
                                 );
                             }
-                            swapchain_image.cmd_transition(
-                                frame.cmd,
-                                .{ .all_transfer_bit = true },
-                                .{ .bottom_of_pipe_bit = true },
-                                .{ .transfer_write_bit = true },
-                                .{},
-                                .transfer_dst_optimal,
-                                .present_src_khr,
-                                null,
-                            );
-                            render_texture.cmd_transition(
-                                frame.cmd,
-                                .{ .all_transfer_bit = true },
-                                .{ .ray_tracing_shader_bit_khr = true },
-                                .{ .transfer_read_bit = true },
-                                .{ .shader_write_bit = true },
-                                .transfer_src_optimal,
-                                .general,
-                                null,
-                            );
                         }
+
+                        //Present barriers
+                        try resource_manager.cmd_emit_barriers(allocator, &present_passes[image_index].pass, frame.cmd);
+
                         try frame.cmd.endCommandBuffer();
                         // Submit
                         {
@@ -1084,9 +1008,12 @@ pub fn main(init: std.process.Init) !void {
                 std.debug.print("ran for {d} with avg ms per full frame {d:.3} avg fps {d:.3}\n", .{ time_sec, avg_ms, 1000.0 / avg_ms });
             }
 
-            //dump texture
+            try u.device.logical_device.deviceWaitIdle();
             {
-                var readback = try emma.vlk_readback_buffer(&u.vma, render_texture.extent.width * render_texture.extent.height * 4 * @sizeOf(f32));
+                var readback = try emma.vlk_readback_buffer(
+                    &u.vma,
+                    render_texture.extent.width * render_texture.extent.height * 4 * @sizeOf(f32),
+                );
                 defer readback.deinit(&u.vma);
 
                 const region = vk.BufferImageCopy{
@@ -1105,33 +1032,41 @@ pub fn main(init: std.process.Init) !void {
 
                 {
                     try is.begin();
-                    // try emma.vlk_cmd_begin_one(cmd);
-                    render_texture.cmd_transition(
-                        is.cmd,
-                        .{ .ray_tracing_shader_bit_khr = true },
-                        .{ .all_transfer_bit = true },
-                        .{ .shader_write_bit = true },
-                        .{ .transfer_read_bit = true },
-                        .general,
-                        .transfer_src_optimal,
-                        render_texture.full_subresource_range(),
-                    );
+                    {
+                        const access = emma.Resource.Access{
+                            .resource = &render_texture_resource,
+                            .stage = .{ .all_transfer_bit = true },
+                            .access = .{ .transfer_read_bit = true },
+                            .layout = .transfer_src_optimal,
+                        };
+                        if (emma.make_barrier(resource_manager.last_state.get(render_texture_resource.handle).?, access)) |b| {
+                            emma.cmd_pipeline_barrier2(is.cmd, &.{b.image}, &.{}, &.{});
+                        }
+                    }
                     is.cmd.copyImageToBuffer(
                         render_texture.handle,
                         .transfer_src_optimal,
                         readback.handle,
                         &[_]vk.BufferImageCopy{region},
                     );
-                    render_texture.cmd_transition(
-                        is.cmd,
-                        .{ .all_transfer_bit = true },
-                        .{ .ray_tracing_shader_bit_khr = true },
-                        .{ .transfer_read_bit = true },
-                        .{ .shader_write_bit = true },
-                        .transfer_src_optimal,
-                        .general,
-                        render_texture.full_subresource_range(),
-                    );
+                    {
+                        const barriers = [_]emma.vk.ImageMemoryBarrier2{
+                            render_texture.image_barrier(
+                                .{ .all_transfer_bit = true },
+                                .{ .ray_tracing_shader_bit_khr = true },
+                                .{ .transfer_read_bit = true },
+                                .{ .shader_write_bit = true },
+                                .transfer_src_optimal,
+                                .general,
+                                render_texture.full_subresource_range(),
+                            ),
+                        };
+                        const dep_info = vk.DependencyInfo{
+                            .image_memory_barrier_count = barriers.len,
+                            .p_image_memory_barriers = &barriers,
+                        };
+                        is.cmd.pipelineBarrier2(&dep_info);
+                    }
                     try is.cmd.endCommandBuffer();
                     const dump_fence = try emma.vlk_fence.init(&u.device, .{});
                     defer dump_fence.deinit(u.device.logical_device);
@@ -1145,35 +1080,6 @@ pub fn main(init: std.process.Init) !void {
 
                     const mapped = readback.info.pMappedData orelse return error.MapFailed;
                     const pixels: [*][4]f32 = @ptrCast(@alignCast(mapped));
-                    const total = render_texture_width * render_texture_height;
-                    var zero_alpha_count: u32 = 0;
-                    var zero_all_count: u32 = 0;
-                    var zero_color_count: u32 = 0;
-                    for (0..total) |i| {
-                        const p = pixels[i];
-                        if (p[3] == 0.0) {
-                            zero_alpha_count += 1;
-                            if (i < 10) // print first few to see their position
-                                std.debug.print("zero alpha pixel at index {d} (x={d}, y={d}) rgba={d:.3},{d:.3},{d:.3},{d:.3}\n", .{
-                                    i,
-                                    i % render_texture_width,
-                                    i / render_texture_width,
-                                    p[0],
-                                    p[1],
-                                    p[2],
-                                    p[3],
-                                });
-                        }
-                        if (p[0] == 0.0 and p[1] == 0.0 and p[2] == 0.0 and p[3] == 0.0) {
-                            zero_all_count += 1;
-                        }
-                        if (p[0] == 0.0 and p[1] == 0.0 and p[2] == 0.0) {
-                            zero_color_count += 1;
-                        }
-                    }
-                    std.debug.print("total pixels: {d}, zero alpha: {d}, fully zero: {d}, zero color: {d}\n", .{
-                        total, zero_alpha_count, zero_all_count, zero_color_count,
-                    });
 
                     try emma.write_exr_rgba(allocator, pixels, render_texture_width, render_texture_height, "render.exr");
                 }
