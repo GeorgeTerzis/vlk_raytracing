@@ -243,8 +243,8 @@ pub fn main(init: std.process.Init) !void {
     const allocator: std.mem.Allocator = std.heap.c_allocator;
     var key_state = std.mem.zeroes([sdl.c.SDL_SCANCODE_COUNT]bool);
 
-    const scene_filepath = if (builtin.mode == .Debug) "./scene_lite.zon" else "./scene.zon";
-    // const scene_filepath = "./scene.zon";
+    // const scene_filepath = if (builtin.mode == .Debug) "./scene_lite.zon" else "./scene.zon";
+    const scene_filepath = "./scene.zon";
 
     var scene_config = blk: {
         const file = try std.Io.Dir.cwd().openFile(io, scene_filepath, .{});
@@ -681,21 +681,22 @@ pub fn main(init: std.process.Init) !void {
 
             const image_available = try allocator.alloc(vk.Semaphore, swapchain.images.len);
             @memset(image_available, .null_handle);
-            const render_finished = try allocator.alloc(vk.Semaphore, swapchain.images.len);
-
             defer {
                 for (image_available) |s| {
                     if (s != .null_handle) u.device.logical_device.destroySemaphore(s, null);
                 }
                 allocator.free(image_available);
             }
-            defer {
-                for (render_finished) |s| u.device.logical_device.destroySemaphore(s, null);
-                allocator.free(render_finished);
-            }
 
+            const render_finished = try allocator.alloc(vk.Semaphore, swapchain.images.len);
             for (render_finished) |*s| {
                 s.* = try u.device.logical_device.createSemaphore(&.{}, null);
+            }
+            defer {
+                for (render_finished) |s| {
+                    u.device.logical_device.destroySemaphore(s, null);
+                }
+                allocator.free(render_finished);
             }
 
             var acquire_semaphore = try u.device.logical_device.createSemaphore(&.{}, null);
@@ -833,16 +834,6 @@ pub fn main(init: std.process.Init) !void {
                     // rendering
                     if (!done) {
                         try resource_manager.cmd_emit_barriers(allocator, &rt_pass.pass, frame.cmd);
-
-                        frame.cmd.bindPipeline(.ray_tracing_khr, rt.pipeline.pipeline.handle);
-                        frame.cmd.bindDescriptorSets(
-                            .ray_tracing_khr,
-                            rt.pipeline.pipeline.layout,
-                            0,
-                            &sets,
-                            null,
-                        );
-
                         {
                             pc2.width = @intCast(render_texture_width);
                             pc2.height = @intCast(render_texture_height);
@@ -852,6 +843,15 @@ pub fn main(init: std.process.Init) !void {
                             pc2.mouse = mouse;
                             pc2.frame = accumilation_frame_counter;
                         }
+
+                        frame.cmd.bindPipeline(.ray_tracing_khr, rt.pipeline.pipeline.handle);
+                        frame.cmd.bindDescriptorSets(
+                            .ray_tracing_khr,
+                            rt.pipeline.pipeline.layout,
+                            0,
+                            &sets,
+                            null,
+                        );
                         frame.cmd.pushConstants(
                             rt.pipeline.pipeline.layout,
                             .{
@@ -879,7 +879,6 @@ pub fn main(init: std.process.Init) !void {
                                 tiles[1] = tiles[1].next(tile_pixel_strides[1], render_texture_height);
                         }
                     }
-
                     const frame_done = (tiles[0].pos == 0 and tiles[1].pos == 0);
 
                     if (frame_done and !done) {
@@ -910,49 +909,49 @@ pub fn main(init: std.process.Init) !void {
                         // Blit
                         {
                             try resource_manager.cmd_emit_barriers(allocator, &blit_passes[image_index].pass, frame.cmd);
-                            {
-                                const blit_region = vk.ImageBlit2{
-                                    .src_subresource = .{
-                                        .aspect_mask = .{ .color_bit = true },
-                                        .mip_level = 0,
-                                        .base_array_layer = 0,
-                                        .layer_count = 1,
+                            const subrange = render_texture.full_subresource_range();
+                            const subrange_swapchain = swapchain_image.full_subresource_range();
+                            const blit_region = vk.ImageBlit2{
+                                .src_subresource = .{
+                                    .aspect_mask = subrange.aspect_mask,
+                                    .mip_level = 0,
+                                    .base_array_layer = 0,
+                                    .layer_count = subrange.layer_count,
+                                },
+                                .src_offsets = .{
+                                    .{ .x = 0, .y = 0, .z = 0 },
+                                    .{
+                                        .x = @intCast(render_texture.extent.width),
+                                        .y = @intCast(render_texture.extent.height),
+                                        .z = 1,
                                     },
-                                    .src_offsets = .{
-                                        .{ .x = 0, .y = 0, .z = 0 },
-                                        .{
-                                            .x = @intCast(render_texture.extent.width),
-                                            .y = @intCast(render_texture.extent.height),
-                                            .z = 1,
-                                        },
+                                },
+                                .dst_subresource = .{
+                                    .aspect_mask = subrange_swapchain.aspect_mask,
+                                    .mip_level = 0,
+                                    .base_array_layer = 0,
+                                    .layer_count = subrange_swapchain.layer_count,
+                                },
+                                .dst_offsets = .{
+                                    .{ .x = 0, .y = 0, .z = 0 },
+                                    .{
+                                        .x = @intCast(swapchain.extent.width),
+                                        .y = @intCast(swapchain.extent.height),
+                                        .z = 1,
                                     },
-                                    .dst_subresource = .{
-                                        .aspect_mask = .{ .color_bit = true },
-                                        .mip_level = 0,
-                                        .base_array_layer = 0,
-                                        .layer_count = 1,
-                                    },
-                                    .dst_offsets = .{
-                                        .{ .x = 0, .y = 0, .z = 0 },
-                                        .{
-                                            .x = @intCast(swapchain.extent.width),
-                                            .y = @intCast(swapchain.extent.height),
-                                            .z = 1,
-                                        },
-                                    },
-                                };
-                                frame.cmd.blitImage2(
-                                    &.{
-                                        .src_image = render_texture.handle,
-                                        .src_image_layout = .transfer_src_optimal,
-                                        .dst_image = swapchain_image.handle,
-                                        .dst_image_layout = .transfer_dst_optimal,
-                                        .region_count = 1,
-                                        .p_regions = @ptrCast(&blit_region),
-                                        .filter = .linear,
-                                    },
-                                );
-                            }
+                                },
+                            };
+                            frame.cmd.blitImage2(
+                                &.{
+                                    .src_image = render_texture.handle,
+                                    .src_image_layout = .transfer_src_optimal,
+                                    .dst_image = swapchain_image.handle,
+                                    .dst_image_layout = .transfer_dst_optimal,
+                                    .region_count = 1,
+                                    .p_regions = @ptrCast(&blit_region),
+                                    .filter = .nearest,
+                                },
+                            );
                         }
 
                         //Present barriers

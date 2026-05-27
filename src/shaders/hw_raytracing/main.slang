@@ -3,12 +3,9 @@ import rand;
 import math;
 import surface;
 import material;
-
 import principled;
-// import glass;
-// import emission;
 
-// adaptive sampling: https://cs184.eecs.berkeley.edu/sp21/docs/proj3-1-part-5
+
 struct PC {
     struct Buffers {
         const Ptr<float3, Access.Read> verts;
@@ -159,6 +156,7 @@ struct AreaLight : Light {
         return 1 / area();
     }
 };
+
 struct PointLight : Light {
     float3 position;
     float3 color;
@@ -176,10 +174,10 @@ void raygen_entry() {
 
     // use specialization constants for these 2
     //  or at least I think I can use them here
-    static let SAMPLES_PER_PIXEL = 3;
-    static let BOUNCES = 12;
+    static let SAMPLES_PER_PIXEL = 1;
+    static let BOUNCES = 5;
 
-    static let camera_position = float3(0, 2.2, 9.0);
+    static let camera_position = float3(0, 2.0, 9.0);
     static let fov = 1;
 
     let screen = Screen::make(uint3(pc.pos, 0) + DispatchRaysIndex());
@@ -240,7 +238,7 @@ void shadow_miss_entry(inout ShadowState payload) {
 
 [shader("miss")]
 void miss_entry(inout State payload) {
-    payload.color = payload.throughput * float3(0.9, 0.7, 0.95) * 0;
+    payload.color = payload.throughput * float3(0.9, 0.5, 0.4) * 3;
     payload.hit = false;
 }
 
@@ -279,9 +277,9 @@ Principled get_material(uint index) {
     case 0:
         return Principled(float3(1, 1, 1), 0.0, 1.0, { 0 }, {}, {}, { 0 });
     case 1:
-        return Principled(float3(0.6, 0.3, 0.3), 0.5, 0, {}, { 1, 0.0 });
+        return Principled(float3(0.8, 0.3, 0.3), 0.5, 0, {}, { 1, 0.0 });
     case 2:
-        return Principled(float3(1), 0.4, 1, {}, {}, {});
+        return Principled(float3(1), 0, 1, {}, {}, {}, {1, 1.44, 0});
     case 3:
         return Principled(float3(0.8),
                           0.3,
@@ -302,12 +300,12 @@ float3 direct_lighting(Principled mat,
                        float3 ray_dir,
                        inout uint seed) {
     static let lights = AreaLight[](
-        // AreaLight(float3(0, 10, 0), float3(0, -1, 0), 1.0, 1.0, float3(10, 10, 10)),
-        // AreaLight(float3(0.2, 20, 3), float3(0, -1, 0), 1.0, 1.0, float3(10, 30, 0)),
-        AreaLight(float3(-4.4, 6, -3), float3(1, 0, 0), 0.3, 0.3, float3(90, 20, 90)),
-        AreaLight(float3(-4.4, 3, -3), float3(1, 0, 0), 0.3, 0.3, float3(30, 250, 300)),
-        AreaLight(float3(4.4, 3, 0), float3(-1, 0, 0), 0.3, 0.3, 300),
-        );
+        AreaLight(float3(0, 10, 0), float3(0, -1, 0), 1.0, 1.0, float3(10, 10, 10)),
+        AreaLight(float3(2.4, 6, 3), float3(1, 0, 0), 1, 0.3, float3(100, 40, 130)),
+        AreaLight(float3(4.4, 6, 3), float3(1, 0, 0), 1, 0.3, float3(10, 140, 130)),
+        AreaLight(float3(-4.4, 6, -3), float3(1, 0, 0), 0.3, 0.3, float3(90, 0, 0)),
+        AreaLight(float3(-4.4, 3, -3), float3(1, 0, 0), 0.3, 0.3, float3(0, 0, 300)),
+        AreaLight(float3(4.4, 3, 0), float3(-1, 0, 0), 1, 0.3, float3(300, 600,1000)), );
     static let light_count = lights.getCount();
 
     if (light_count == 0)
@@ -322,7 +320,7 @@ float3 direct_lighting(Principled mat,
         let to_light = light_point - pos;
 
         let dist = length(to_light);
-        let dist2 = dist * dist;
+        let dist2 = max(dist * dist, 1e-5);
 
         let to_light_dir = normalize(to_light);
         let NoL_light = max(dot(light.normal, -to_light_dir), 0.0);
@@ -330,9 +328,9 @@ float3 direct_lighting(Principled mat,
         let NoL = max(dot(surface.normal, to_light_dir), 0.0);
 
         let estimated_importance =
-            luminance(light.color) * light_area * NoL * NoL_light / max(dist2, 1e-5);
+            luminance(light.color) * light_area * NoL * NoL_light / dist2;
 
-        if (estimated_importance >= 0.001 && NoL_light > 0.0) {
+        if (estimated_importance >= 1e-4 && NoL_light > 1e-3) {
             RayDesc shadow_ray;
             shadow_ray.Origin = pos;
             shadow_ray.Direction = to_light_dir;
@@ -340,15 +338,15 @@ float3 direct_lighting(Principled mat,
             shadow_ray.TMax = dist - 0.0001;
 
             var shadow = ShadowState(true);
-            TraceRay(
-                tlas,
-                RAY_FLAG_SKIP_CLOSEST_HIT_SHADER | RAY_FLAG_CULL_BACK_FACING_TRIANGLES,
-                0xFF,
-                1,
-                0,
-                1,
-                shadow_ray,
-                shadow);
+            TraceRay(tlas,
+                     RAY_FLAG_SKIP_CLOSEST_HIT_SHADER |
+                         RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH,
+                     0xFF,
+                     1,
+                     0,
+                     1,
+                     shadow_ray,
+                     shadow);
 
             if (!shadow.hit) {
                 let view = -ray_dir;
@@ -383,10 +381,11 @@ void closest_hit_entry(inout State payload,
     let surface = Surface::make(primitive.geometric_norm, primitive.norm);
     let safe_pos = hit.pos + (surface.normal * 1e-8);
 
-    let mat = get_material(material.index);
+    let mat = (safe_pos.y >= 1e-4) ? get_material(material.index)
+                                   : Principled(1, 0.2, 1.0, {}, {}, {}, {});
 
     var Lindirect = float3(0);
-    if (payload.bounce <= 5) {
+    if (payload.bounce <= 3) {
         Lindirect =
             direct_lighting(mat, safe_pos, surface, payload.ray_dir, payload.seed);
     }
@@ -394,7 +393,7 @@ void closest_hit_entry(inout State payload,
     let result = mat.scatter(surface, payload.ray_dir, payload.seed);
 
     payload.color += Lindirect;
-    payload.throughput *= result.throughput;
+    payload.throughput *= clamp(result.throughput, float3(0), float3(10));
     payload.ray_dir = result.direction;
     payload.hit = true;
     payload.pos = safe_pos;

@@ -2,6 +2,10 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 pub const c_libs = @import("c_libs");
+pub const handle_lib = @import("handle.zig");
+
+pub const HandleType = handle_lib.HandleType;
+
 // pub const c_libs = c_libs.c_libs;
 // pub const tinyexr = c_libs.tinyexr;
 
@@ -2909,11 +2913,13 @@ pub const Resource = struct {
     data: u,
 };
 
-pub const Resource_Map = std.AutoArrayHashMapUnmanaged(Resource.Handle, Resource.Access);
+pub const ResourceAccessMap = std.AutoArrayHashMapUnmanaged(Resource.Handle, Resource.Access);
 
 pub const Pass = struct {
-    reads: Resource_Map,
-    writes: Resource_Map,
+    pub const Handle = u32;
+
+    reads: ResourceAccessMap,
+    writes: ResourceAccessMap,
 
     pub fn init() Pass {
         return .{
@@ -3047,7 +3053,7 @@ pub const Present_pass = struct {
 };
 
 pub const Resource_Manager = struct {
-    last_state: Resource_Map,
+    last_state: ResourceAccessMap,
 
     pub fn init() Resource_Manager {
         return .{ .last_state = .empty };
@@ -3128,28 +3134,164 @@ pub fn make_barrier(src: Resource.Access, dst: Resource.Access) ?Pass.Barrier {
     if (!src_writes and !dst_writes and src.layout == dst.layout) return null;
 
     return switch (src.resource.data) {
-        .texture => |tex| .{ .image = vk.ImageMemoryBarrier2{
-            .src_stage_mask = src.stage,
-            .src_access_mask = src.access,
-            .dst_stage_mask = dst.stage,
-            .dst_access_mask = dst.access,
-            .old_layout = src.layout,
-            .new_layout = dst.layout,
-            .image = tex.handle,
-            .subresource_range = tex.full_subresource_range(),
-            .src_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
-            .dst_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
-        } },
-        .buffer => |buf| .{ .buffer = vk.BufferMemoryBarrier2{
-            .src_stage_mask = src.stage,
-            .src_access_mask = src.access,
-            .dst_stage_mask = dst.stage,
-            .dst_access_mask = dst.access,
-            .src_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
-            .dst_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
-            .buffer = buf.handle,
-            .offset = 0,
-            .size = buf.size,
-        } },
+        .texture => |tex| .{
+            .image = vk.ImageMemoryBarrier2{
+                .src_stage_mask = src.stage,
+                .src_access_mask = src.access,
+                .dst_stage_mask = dst.stage,
+                .dst_access_mask = dst.access,
+                .old_layout = src.layout,
+                .new_layout = dst.layout,
+                .image = tex.handle,
+                .subresource_range = tex.full_subresource_range(),
+                .src_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
+                .dst_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
+            },
+        },
+        .buffer => |buf| .{
+            .buffer = vk.BufferMemoryBarrier2{
+                .src_stage_mask = src.stage,
+                .src_access_mask = src.access,
+                .dst_stage_mask = dst.stage,
+                .dst_access_mask = dst.access,
+                .src_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
+                .dst_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
+                .buffer = buf.handle,
+                .offset = 0,
+                .size = buf.size,
+            },
+        },
     };
 }
+
+pub fn Register(comptime Type: type) type {
+    return struct {
+        pub const Self = @This();
+        pub const Storage = std.ArrayList(Type);
+        pub const Handle = HandleType(Type);
+        storage: Storage,
+
+        pub fn init() Self {
+            return .{ .storage = .empty };
+        }
+
+        pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
+            self.storage.deinit(allocator);
+        }
+
+        pub fn append(self: *Self, allocator: std.mem.Allocator, value: Type) !Handle {
+            const index = self.storage.items.len;
+            try self.storage.append(allocator, value);
+            return .{ .value = index };
+        }
+
+        pub fn get(self: *Self, handle: Handle) *Type {
+            return &self.storage.items[handle.value];
+        }
+    };
+}
+
+pub fn RegisterPools(comptime RegisterTypes: anytype) type {
+    var field_names: [RegisterTypes.len][]const u8 = undefined;
+    var field_types: [RegisterTypes.len]type = undefined;
+    var field_attributes: [RegisterTypes.len]std.builtin.Type.StructField.Attributes = .{};
+    for (RegisterTypes, 0..) |field, i| {
+        const name = field.name;
+        const T = field.type;
+        const TT = Register(T);
+        field_names[i] = name;
+        field_types[i] = TT;
+        field_attributes[i] = .{
+            .@"comptime" = false,
+            .@"align" = @alignOf(TT),
+        };
+    }
+
+    const t = @Struct(.auto, null, field_names, field_types, field_attributes);
+
+    return t;
+}
+
+pub const ResourceManager = struct {
+    pub const Self = @This();
+    pub const Pass = struct {};
+
+    const Resource = union {
+        texture: *vlk_image,
+        buffer: *vlk_vma_buffer,
+    };
+
+    const PassStorage = Register(Self.Pass);
+    const ResourceStorage = Register(Self.Resource);
+
+    pub const AccessInfo = struct {
+        stage: vk.PipelineStageFlags2,
+        access: vk.AccessFlags2,
+        layout: vk.ImageLayout,
+    };
+
+    const PassAccess = struct {
+        resource: HandleType(Self.Resource),
+        access: AccessInfo,
+    };
+
+    const PassAccessStorage = std.ArrayList(PassAccess);
+    const AccessStorage = std.ArrayList(AccessInfo);
+
+    resource_storage: ResourceStorage,
+    pass_storage: PassStorage,
+
+    last_access: AccessStorage,
+    access_graph: std.ArrayList(PassAccessStorage),
+
+    pub fn register_resource(
+        manager: *@This(),
+        allocator: std.mem.Allocator,
+        resource: Self.Resource,
+    ) !ResourceStorage.Handle {
+        return try manager.resource_storage.append(allocator, resource);
+    }
+
+    pub fn register_pass(
+        manager: *@This(),
+        allocator: std.mem.Allocator,
+        pass: Self.Pass,
+    ) !PassStorage.Handle {
+        const handle = try manager.pass_storage.append(allocator, pass);
+        try manager.access_graph.append(allocator, PassAccessStorage.empty);
+        return handle;
+    }
+
+    pub fn register_access(
+        manager: *@This(),
+        allocator: std.mem.Allocator,
+        pass: HandleType(Self.Pass),
+        resource: HandleType(Self.Resource),
+        access: AccessInfo,
+    ) !void {
+        try manager.access_graph.items[pass.value].append(allocator, .{
+            .resource = resource,
+            .access = access,
+        });
+    }
+
+    pub fn init() Self {
+        return .{
+            .resource_storage = ResourceStorage.init(),
+            .pass_storage = PassStorage.init(),
+            .last_access = AccessStorage.empty,
+            .access_graph = std.ArrayList(PassAccessStorage).empty,
+        };
+    }
+
+    pub fn deinit(manager: *Self, allocator: std.mem.Allocator) void {
+        for (manager.access_graph.items) |*pas| {
+            pas.deinit(allocator);
+        }
+
+        manager.access_graph.deinit(allocator);
+        manager.last_access.deinit(allocator);
+        manager.resource_storage.deinit(allocator);
+        manager.pass_storage.deinit(allocator);
+    }
+};

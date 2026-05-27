@@ -84,7 +84,7 @@ public struct VNDF {
 
     static public float3 GgxVndf(float3 wo, float roughness, float2 u) {
         let v = normalize(float3(wo.x * roughness, wo.y, wo.z * roughness));
-        let t1 = (v.y < 0.999f) ? normalize(cross(v, YAxis_)) : XAxis_;
+        let t1 = (v.y < 1) ? normalize(cross(v, YAxis_)) : XAxis_;
         let t2 = cross(t1, v);
         let a = 1.0f / (1.0f + v.y);
         let r = sqrt(u.x);
@@ -337,7 +337,7 @@ struct EmissionLobe : Lobe {
     }
 
     LobeResult sample_lobe(float3 view, Surface surface, float2 u, inout uint seed) {
-        return {color* strength, 0};
+        return { color * strength, 0 };
     }
 };
 
@@ -371,30 +371,26 @@ public struct Principled {
 
     public float3 eval(float3 view, float3 light_dir, Surface surface) {
         let w = compute_weights();
-        let diffuse_lobe = DiffuseLobe(color,
-                                       roughness,
-                                       pdiffuse.subsurface,
-                                       psheen.tint,
-                                       psheen.weight);
-        let d = (w.pd >= 1e-4) ? DiffuseLobe(color,
-                                             roughness,
-                                             pdiffuse.subsurface,
-                                             psheen.tint,
-                                             psheen.weight)
-                                     .eval(view, light_dir, surface)
+        let d = (w.pd >= 1e-3) ? w.pd * DiffuseLobe(color,
+                                                    roughness,
+                                                    pdiffuse.subsurface,
+                                                    psheen.tint,
+                                                    psheen.weight)
+                                            .eval(view, light_dir, surface)
                                : 0.0;
-        let m = (w.pm >= 1e-4) ? GGXLobe(w.F0, roughness).eval(view, light_dir, surface)
-                               : 0.0;
-        let c = (w.pc >= 1e-2) ? GGXLobe(Clearcoat::R0(1.5),
-                                         Clearcoat::ag(pclearcoat.gloss),
-                                         pclearcoat.weight)
-                                     .eval(view, light_dir, surface)
-                               : 0.0;
-        let t = (w.pt >= 1e-2)
+        let m = (w.pm > 0)
+                    ? w.pm * GGXLobe(w.F0, roughness).eval(view, light_dir, surface)
+                    : 0.0;
+        let c = (w.pc > 0) ? w.pc * GGXLobe(Clearcoat::R0(1.5),
+                                            Clearcoat::ag(pclearcoat.gloss),
+                                            pclearcoat.weight)
+                                        .eval(view, light_dir, surface)
+                           : 0.0;
+        let t = (w.pt > 0)
                     ? Transmission(color, ptransmission.ior, ptransmission.roughness)
                           .eval(view, light_dir, surface)
                     : 0.0;
-        return w.pd * d + w.pm * m + w.pc * c;
+        return d + m + c + t;
     }
 
     public struct diffuse_pararms {
@@ -433,8 +429,8 @@ public struct Principled {
 
         let r = random::unit(seed);
         let u = random::f2(seed);
-
         var result = LobeResult(0, 0);
+
         if (r < w.pd) {
             let lobe = DiffuseLobe(color,
                                    roughness,
@@ -442,12 +438,12 @@ public struct Principled {
                                    psheen.tint,
                                    psheen.weight);
             result = lobe.sample_lobe(view, surface, u, seed);
-            if (w.pd > 1e-5)
+            if (w.pd > 1e-4)
                 result.throughput /= w.pd;
         } else if (r < w.pd + w.pm) {
             let lobe = GGXLobe(w.F0, roughness);
             result = lobe.sample_lobe(view, surface, u, seed);
-            if (w.pm > 1e-5)
+            if (w.pm > 1e-4)
                 result.throughput /= w.pm;
 
         } else if (r < w.pd + w.pm + w.pc) {
@@ -455,15 +451,14 @@ public struct Principled {
                                Clearcoat::ag(pclearcoat.gloss),
                                pclearcoat.weight);
             result = lobe.sample_lobe(view, surface, u, seed);
-            if (w.pc > 1e-5)
+            if (w.pc > 1e-4)
                 result.throughput /= w.pc;
         } else {
             let lobe = Transmission(color, ptransmission.ior, ptransmission.roughness);
             result = lobe.sample_lobe(view, surface, u, seed);
-            if (w.pt > 1e-5)
+            if (w.pt > 1e-4)
                 result.throughput /= w.pt;
         }
-        result.throughput = min(result.throughput, float3(10.0));
         return result;
     }
 };

@@ -110,4 +110,10 @@ pub fn build(b: *std.Build) void {
         const run_step = b.step("run", "Run the application");
         run_step.dependOn(&run_exe.step);
     }
+    const exe_check = b.addExecutable(.{
+        .name = "foo",
+        .root_module = exe.root_module,
+    });
+    const check = b.step("check", "Check if project compiles");
+    check.dependOn(&exe_check.step);
 }
