@@ -1720,7 +1720,7 @@ pub const vlk_rt_pipeline = struct {
                     c_libs.VK_BUFFER_USAGE_2_TRANSFER_DST_BIT,
                 c_libs.VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
                 0,
-                handle_alignment,
+                base_alignment,
             );
             errdefer region_buffer.deinit(vma);
 
