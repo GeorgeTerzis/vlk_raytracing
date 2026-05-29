@@ -204,6 +204,7 @@ fn build_local_geometry(
     }
     return local_geometries;
 }
+
 fn build_device_geometry(
     allocator: std.mem.Allocator,
     u: *emma.vlk_unit,
@@ -231,860 +232,905 @@ fn build_device_geometry(
     }
     try is.submit_and_wait(u.queue(), u.device.logical_device);
 
-    return device_geometries.items;
+    return device_geometries.toOwnedSlice(allocator);
 }
 
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const clock = std.Io.Clock.real;
+
     try emma.sdl_init();
     defer emma.sdl_deinit();
 
-    const allocator: std.mem.Allocator = std.heap.c_allocator;
-    var key_state = std.mem.zeroes([sdl.c.SDL_SCANCODE_COUNT]bool);
+    // This could be cleaner but it is what it is
 
-    // const scene_filepath = if (builtin.mode == .Debug) "./scene_lite.zon" else "./scene.zon";
-    const scene_filepath = "./scene.zon";
+    const DebugAllocator = std.heap.DebugAllocator(.{ .thread_safe = true }); //helps with invalid frees and memory leaks
+    var debug_allocator = DebugAllocator.init;
+    const c_heap_allocator = std.heap.c_allocator;
 
-    var scene_config = blk: {
-        const file = try std.Io.Dir.cwd().openFile(io, scene_filepath, .{});
-        defer file.close(io);
+    const allocator: std.mem.Allocator = if (builtin.mode == .Debug) debug_allocator.allocator() else c_heap_allocator;
 
-        const src = try emma.readfile_allocZ(allocator, io, file);
-        const result = try config.parse(allocator, src);
+    // _ = try allocator.alloc(u32, 10);
+    {
+        var key_state = std.mem.zeroes([sdl.c.SDL_SCANCODE_COUNT]bool);
 
-        break :blk result;
-    };
+        // const scene_filepath = if (builtin.mode == .Debug) "./scene_lite.zon" else "./scene.zon";
+        const scene_filepath = "./scene.zon";
 
-    defer scene_config.deinit();
+        var scene_config = blk: {
+            const file = try std.Io.Dir.cwd().openFile(io, scene_filepath, .{});
+            defer file.close(io);
 
-    const width: usize = 1440;
-    const height: usize = 1440;
+            const src = try emma.readfile_allocZ(allocator, io, file);
+            defer allocator.free(src);
+            const result = try config.parse(allocator, src);
 
-    var u = try emma.vlk_unit.init(allocator, width, height);
-    defer u.deinit(allocator);
+            break :blk result;
+        };
+        defer scene_config.deinit();
 
-    const cmd_pool = try emma.vlk_command_pool.init(&u.device);
-    defer cmd_pool.deinit(u.device.logical_device);
+        const width: usize = 1440;
+        const height: usize = 1440;
 
-    const command_buffers = try emma.vlk_command_buffer_allocation.init(
-        allocator,
-        u.device.logical_device,
-        cmd_pool.handle,
-        10,
-    );
+        var u = try emma.vlk_unit.init(allocator, width, height);
+        defer u.deinit(allocator);
 
-    const is = try emma.ImediateSubmit.init(
-        &u.device,
-        command_buffers.buffers[0],
-    );
+        const cmd_pool = try emma.vlk_command_pool.init(&u.device);
+        defer cmd_pool.deinit(u.device.logical_device);
 
-    const local_geometry_storage = try build_local_geometry(allocator, io, scene_config.primitive);
-    const device_geometry_storage = try build_device_geometry(allocator, &u, local_geometry_storage, is);
+        var command_buffers = try emma.vlk_command_buffer_allocation.init(
+            allocator,
+            u.device.logical_device,
+            cmd_pool.handle,
+            10,
+        );
+        defer command_buffers.deinit(allocator);
 
-    defer is.deinit(&u.device);
-    defer allocator.free(local_geometry_storage);
-    defer {
-        for (device_geometry_storage) |mesh| {
-            mesh.deinit(&u.vma);
+        const is = try emma.ImediateSubmit.init(
+            &u.device,
+            command_buffers.buffers[0],
+        );
+        defer is.deinit(&u.device);
+
+        const local_geometry_storage = try build_local_geometry(allocator, io, scene_config.primitive);
+        defer {
+            for (local_geometry_storage) |*elm| {
+                elm.deinit(allocator);
+            }
+            allocator.free(local_geometry_storage);
         }
-        allocator.free(device_geometry_storage);
-    }
 
-    var blas_geometry_storage = std.MultiArrayList(emma.raytracing_geometry_data){};
-    try blas_geometry_storage.ensureTotalCapacity(allocator, 5);
+        const device_geometry_storage = try build_device_geometry(allocator, &u, local_geometry_storage, is);
+        defer {
+            for (device_geometry_storage) |mesh| {
+                mesh.deinit(&u.vma);
+            }
+            allocator.free(device_geometry_storage);
+        }
 
-    var materials_storage = try std.ArrayList(u32).initCapacity(allocator, 5);
-    defer materials_storage.deinit(allocator);
+        var blas_geometry_storage = std.MultiArrayList(emma.raytracing_geometry_data){};
+        try blas_geometry_storage.ensureTotalCapacity(allocator, 5);
+        defer blas_geometry_storage.deinit(allocator);
 
-    var blas_ranges = try std.ArrayList(emma.blas_geometry_range).initCapacity(allocator, scene_config.assets.len);
-    var materials = try std.ArrayList(u32).initCapacity(allocator, scene_config.assets.len);
-    var instance_transforms = try std.ArrayList(vk.TransformMatrixKHR).initCapacity(allocator, scene_config.assets.len);
+        var materials_storage = try std.ArrayList(u32).initCapacity(allocator, 5);
+        defer materials_storage.deinit(allocator);
 
-    for (scene_config.assets) |node| {
-        const begin = blas_geometry_storage.len;
-        {
-            const len = 1;
+        var blas_ranges = try std.ArrayList(emma.blas_geometry_range).initCapacity(allocator, scene_config.assets.len);
+        defer blas_ranges.deinit(allocator);
+
+        var materials = try std.ArrayList(u32).initCapacity(allocator, scene_config.assets.len);
+        defer materials.deinit(allocator);
+
+        var instance_transforms = try std.ArrayList(vk.TransformMatrixKHR).initCapacity(allocator, scene_config.assets.len);
+        defer instance_transforms.deinit(allocator);
+
+        for (scene_config.assets) |node| {
+            const begin = blas_geometry_storage.len;
             {
+                const len = 1;
                 {
                     {
-                        const geometry_handle: u32 = node.primitive;
-                        const geometry = emma.raytracing_geometry_data.init(device_geometry_storage, geometry_handle, &u.device);
-                        try blas_geometry_storage.append(allocator, geometry);
-                    }
-                    {
-                        const pos = emma.mth.vec.from_arr3(node.transform.pos, 0);
-                        //for now we will skip the rotation
-                        // it needs to be converted to quat
-                        // which needs to be it's own type
-                        // const rot = node.transform.rot;
-                        const angles = node.transform.rot;
-                        _ = angles;
-                        const quat = emma.mth.vec.fzero();
-                        const scale = emma.mth.vec.from_arr3(node.transform.scale, 1);
+                        {
+                            const geometry_handle: u32 = node.primitive;
+                            const geometry = emma.raytracing_geometry_data.init(device_geometry_storage, geometry_handle, &u.device);
+                            try blas_geometry_storage.append(allocator, geometry);
+                        }
+                        {
+                            const pos = emma.mth.vec.from_arr3(node.transform.pos, 0);
+                            //for now we will skip the rotation
+                            // it needs to be converted to quat
+                            // which needs to be it's own type
+                            // const rot = node.transform.rot;
+                            const angles = node.transform.rot;
+                            _ = angles;
+                            const quat = emma.mth.vec.fzero();
+                            const scale = emma.mth.vec.from_arr3(node.transform.scale, 1);
 
-                        const mat = emma.mth.model(pos, quat, scale);
-                        const vk_trans = emma.mth_to_vk_transform_matrix(mat);
-                        try instance_transforms.append(allocator, vk_trans);
+                            const mat = emma.mth.model(pos, quat, scale);
+                            const vk_trans = emma.mth_to_vk_transform_matrix(mat);
+                            try instance_transforms.append(allocator, vk_trans);
+                        }
+                        {
+                            const material = node.material;
+                            try materials_storage.append(allocator, material);
+                            try materials.append(allocator, material);
+                        }
                     }
-                    {
-                        const material = node.material;
-                        try materials_storage.append(allocator, material);
-                        try materials.append(allocator, material);
-                    }
+
+                    try blas_ranges.append(allocator, .{ .begin = @intCast(begin), .len = @intCast(len) });
                 }
-
-                try blas_ranges.append(allocator, .{ .begin = @intCast(begin), .len = @intCast(len) });
             }
         }
-    }
 
-    defer materials.deinit(allocator);
-    var staging_pool = try std.ArrayList(emma.vlk_vma_buffer).initCapacity(allocator, 10);
-    defer {
-        for (staging_pool.items) |buffer| {
-            buffer.deinit(&u.vma);
+        var staging_pool = try std.ArrayList(emma.vlk_vma_buffer).initCapacity(allocator, 10);
+        defer {
+            for (staging_pool.items) |buffer| {
+                buffer.deinit(&u.vma);
+            }
+            staging_pool.deinit(allocator);
         }
-        staging_pool.deinit(allocator);
-    }
 
-    var blas_list = try std.ArrayList(emma.rt_acceleration_structure).initCapacity(allocator, 10);
-    {
-        const begin_time = std.Io.Timestamp.now(io, clock);
+        var blas_list = try std.ArrayList(emma.rt_acceleration_structure).initCapacity(allocator, 10);
+        {
+            const begin_time = std.Io.Timestamp.now(io, clock);
+            try is.begin();
+            for (blas_ranges.items) |range| {
+                const begin = range.begin;
+                const len = range.len;
+                const end = begin + len;
+
+                const geometries = blas_geometry_storage.items(.geometry)[begin..end];
+                const ranges = blas_geometry_storage.items(.range)[begin..end];
+
+                const blas = try emma.rt_acceleration_structure.init_blas(
+                    allocator,
+                    &u.vma,
+                    &u.device,
+                    geometries,
+                    ranges,
+                    .{},
+                    &staging_pool,
+                    is.cmd,
+                );
+                try blas_list.append(allocator, blas);
+            }
+            try is.submit_and_wait(u.queue(), u.device.logical_device);
+
+            const duration = begin_time.untilNow(io, clock);
+            std.debug.print("created BLAS structures in {d:.2}ms\n", .{duration.toMilliseconds()});
+        }
+        defer {
+            for (blas_list.items) |b| {
+                b.deinit(&u.vma, &u.device);
+            }
+            blas_list.deinit(allocator);
+        }
+
         try is.begin();
-        for (blas_ranges.items) |range| {
-            const begin = range.begin;
-            const len = range.len;
-            const end = begin + len;
 
-            const geometries = blas_geometry_storage.items(.geometry)[begin..end];
-            const ranges = blas_geometry_storage.items(.range)[begin..end];
-
-            const blas = try emma.rt_acceleration_structure.init_blas(
-                allocator,
+        const device_materials = blk: {
+            try staging_pool.append(allocator, try emma.vlk_upload_buffer_with_data(
                 &u.vma,
-                &u.device,
-                geometries,
-                ranges,
-                .{},
-                &staging_pool,
-                is.cmd,
+                std.mem.sliceAsBytes(materials.items),
+            ));
+            const buffer = try emma.vlk_vma_buffer.init(
+                &u.vma,
+                staging_pool.getLast().size,
+                emma.c_libs.VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                    emma.c_libs.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                    emma.c_libs.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                emma.c_libs.VMA_MEMORY_USAGE_AUTO,
+                0,
             );
-            try blas_list.append(allocator, blas);
-        }
+            staging_pool.getLast().cmd_copy_to(&buffer, is.cmd);
+
+            break :blk buffer;
+        };
+
+        defer device_materials.deinit(&u.vma);
+
+        const buffers = blk: {
+            var buffers_info = try std.ArrayList(HW_raytracing_pipeline.PC.Buffers).initCapacity(allocator, device_geometry_storage.len);
+            defer buffers_info.deinit(allocator);
+
+            for (device_geometry_storage) |mesh| {
+                buffers_info.appendAssumeCapacity(
+                    .{
+                        .verts = mesh.vertex_buffer.address(&u.device),
+                        .norms = mesh.normal_buffer.address(&u.device),
+                        .uvs = 0,
+                        .indices = mesh.index_buffer.address(&u.device),
+                        .normal_indices = mesh.normal_index_buffer.address(&u.device),
+                    },
+                );
+            }
+
+            try staging_pool.append(allocator, try emma.vlk_upload_buffer_with_data(
+                &u.vma,
+                std.mem.sliceAsBytes(buffers_info.items),
+            ));
+
+            const buffer = try emma.vlk_vma_buffer.init(
+                &u.vma,
+                staging_pool.getLast().size,
+                emma.c_libs.VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                    emma.c_libs.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                emma.c_libs.VMA_MEMORY_USAGE_AUTO,
+                0,
+            );
+
+            staging_pool.getLast().cmd_copy_to(&buffer, is.cmd);
+
+            break :blk buffer;
+        };
+        defer buffers.deinit(&u.vma);
+
+        const geometry_buffer = blk: {
+            const items = blas_geometry_storage.items(.index);
+            const slice = std.mem.sliceAsBytes(items);
+            try staging_pool.append(allocator, try emma.vlk_upload_buffer_with_data(&u.vma, slice));
+
+            const buffer = try emma.vlk_vma_buffer.init(
+                &u.vma,
+                staging_pool.getLast().size,
+                emma.c_libs.VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                    emma.c_libs.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                emma.c_libs.VMA_MEMORY_USAGE_AUTO,
+                0,
+            );
+
+            staging_pool.getLast().cmd_copy_to(&buffer, is.cmd);
+
+            break :blk buffer;
+        };
+        defer geometry_buffer.deinit(&u.vma);
+
+        const range_buffer = blk: {
+            const items = blas_ranges.items;
+            const slice = std.mem.sliceAsBytes(items);
+            try staging_pool.append(allocator, try emma.vlk_upload_buffer_with_data(&u.vma, slice));
+
+            const buffer = try emma.vlk_vma_buffer.init(
+                &u.vma,
+                staging_pool.getLast().size,
+                emma.c_libs.VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                    emma.c_libs.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                emma.c_libs.VMA_MEMORY_USAGE_AUTO,
+                0,
+            );
+
+            staging_pool.getLast().cmd_copy_to(&buffer, is.cmd);
+
+            break :blk buffer;
+        };
+        defer range_buffer.deinit(&u.vma);
         try is.submit_and_wait(u.queue(), u.device.logical_device);
 
-        const duration = begin_time.untilNow(io, clock);
-        std.debug.print("created BLAS structures in {d:.2}ms\n", .{duration.toMilliseconds()});
-    }
-    defer {
-        for (blas_list.items) |b| {
-            b.deinit(&u.vma, &u.device);
-        }
-        allocator.free(blas_list.items);
-    }
+        var mouse = MousePos{ .x = 0, .y = 0 };
 
-    try is.begin();
-
-    const device_materials = blk: {
-        try staging_pool.append(allocator, try emma.vlk_upload_buffer_with_data(
-            &u.vma,
-            std.mem.sliceAsBytes(materials.items),
-        ));
-        const buffer = try emma.vlk_vma_buffer.init(
-            &u.vma,
-            staging_pool.getLast().size,
-            emma.c_libs.VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-                emma.c_libs.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                emma.c_libs.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-            emma.c_libs.VMA_MEMORY_USAGE_AUTO,
-            0,
-        );
-        staging_pool.getLast().cmd_copy_to(&buffer, is.cmd);
-
-        break :blk buffer;
-    };
-
-    defer device_materials.deinit(&u.vma);
-
-    const buffers = blk: {
-        var buffers_info = try std.ArrayList(HW_raytracing_pipeline.PC.Buffers).initCapacity(allocator, device_geometry_storage.len);
-
-        for (device_geometry_storage) |mesh| {
-            buffers_info.appendAssumeCapacity(
-                .{
-                    .verts = mesh.vertex_buffer.address(&u.device),
-                    .norms = mesh.normal_buffer.address(&u.device),
-                    .uvs = 0,
-                    .indices = mesh.index_buffer.address(&u.device),
-                    .normal_indices = mesh.normal_index_buffer.address(&u.device),
-                },
-            );
-        }
-
-        try staging_pool.append(allocator, try emma.vlk_upload_buffer_with_data(
-            &u.vma,
-            std.mem.sliceAsBytes(buffers_info.items),
-        ));
-
-        const buffer = try emma.vlk_vma_buffer.init(
-            &u.vma,
-            staging_pool.getLast().size,
-            emma.c_libs.VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-                emma.c_libs.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-            emma.c_libs.VMA_MEMORY_USAGE_AUTO,
-            0,
-        );
-
-        staging_pool.getLast().cmd_copy_to(&buffer, is.cmd);
-
-        break :blk buffer;
-    };
-    defer buffers.deinit(&u.vma);
-
-    const geometry_buffer = blk: {
-        const items = blas_geometry_storage.items(.index);
-        const slice = std.mem.sliceAsBytes(items);
-        try staging_pool.append(allocator, try emma.vlk_upload_buffer_with_data(&u.vma, slice));
-
-        const buffer = try emma.vlk_vma_buffer.init(
-            &u.vma,
-            staging_pool.getLast().size,
-            emma.c_libs.VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-                emma.c_libs.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-            emma.c_libs.VMA_MEMORY_USAGE_AUTO,
-            0,
-        );
-
-        staging_pool.getLast().cmd_copy_to(&buffer, is.cmd);
-
-        break :blk buffer;
-    };
-    defer geometry_buffer.deinit(&u.vma);
-
-    const range_buffer = blk: {
-        const items = blas_ranges.items;
-        const slice = std.mem.sliceAsBytes(items);
-        try staging_pool.append(allocator, try emma.vlk_upload_buffer_with_data(&u.vma, slice));
-
-        const buffer = try emma.vlk_vma_buffer.init(
-            &u.vma,
-            staging_pool.getLast().size,
-            emma.c_libs.VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-                emma.c_libs.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-            emma.c_libs.VMA_MEMORY_USAGE_AUTO,
-            0,
-        );
-
-        staging_pool.getLast().cmd_copy_to(&buffer, is.cmd);
-
-        break :blk buffer;
-    };
-    defer range_buffer.deinit(&u.vma);
-    try is.submit_and_wait(u.queue(), u.device.logical_device);
-
-    var mouse = MousePos{ .x = 0, .y = 0 };
-
-    var pc2 = HW_raytracing_pipeline.PC{
-        .height = 0,
-        .width = 0,
-        .time = 0,
-        .frame = 0,
-        .posx = 0,
-        .posy = 0,
-        .mouse = mouse,
-        .buffers = buffers.address(&u.device),
-        .geometries = geometry_buffer.address(&u.device),
-        .ranges = range_buffer.address(&u.device),
-        .materials = device_materials.address(&u.device),
-    };
-
-    const tlas = try emma.rt_acceleration_structure.init_tlas(
-        allocator,
-        &u.vma,
-        &u.device,
-        blas_list.items,
-        instance_transforms.items,
-        .{},
-        &staging_pool,
-        is,
-    );
-    defer tlas.deinit(&u.vma, &u.device);
-
-    const rt_props = emma.vlk_get_raytracing_properties(&u.vki, &u.device);
-
-    const file = try std.Io.Dir.cwd().openFile(io, "./src/shaders/hw_raytracing/shader.spv", .{});
-    defer file.close(io);
-
-    const spirv = try emma.readfile_alloc(allocator, io, file);
-    defer allocator.free(spirv);
-
-    const hw_rt_module = try u.device.logical_device.createShaderModule(
-        &.{
-            .code_size = spirv.len,
-            .p_code = @ptrCast(@alignCast(spirv.ptr)),
-        },
-        null,
-    );
-    defer u.device.logical_device.destroyShaderModule(hw_rt_module, null);
-    const hw_rt_stages = [_]emma.vlk_shader_stage{
-        emma.vlk_shader_stage.init(
-            .{ .raygen_bit_khr = true },
-            "raygen_entry",
-            hw_rt_module,
-        ),
-        emma.vlk_shader_stage.init(
-            .{ .miss_bit_khr = true },
-            "miss_entry",
-            hw_rt_module,
-        ),
-        emma.vlk_shader_stage.init(
-            .{ .closest_hit_bit_khr = true },
-            "closest_hit_entry",
-            hw_rt_module,
-        ),
-        emma.vlk_shader_stage.init(
-            .{ .closest_hit_bit_khr = true },
-            "shadow_closest_hit_entry",
-            hw_rt_module,
-        ),
-        emma.vlk_shader_stage.init(
-            .{ .miss_bit_khr = true },
-            "shadow_miss_entry",
-            hw_rt_module,
-        ),
-    };
-
-    var rt = try HW_raytracing_pipeline.init(allocator, &u, &rt_props, &hw_rt_stages, is);
-    defer rt.deinit(allocator, &u);
-
-    std.debug.print("Created pipeline successfully \n", .{});
-    //
-
-    var resource_manager = emma.Resource_Manager.init();
-    {
-        const descriptor_sizes = [_]vk.DescriptorPoolSize{
-            .{ .descriptor_count = 10, .type = .combined_image_sampler },
-            .{ .descriptor_count = 10, .type = .storage_image },
-            .{ .descriptor_count = 10, .type = .acceleration_structure_khr },
+        var pc2 = HW_raytracing_pipeline.PC{
+            .height = 0,
+            .width = 0,
+            .time = 0,
+            .frame = 0,
+            .posx = 0,
+            .posy = 0,
+            .mouse = mouse,
+            .buffers = buffers.address(&u.device),
+            .geometries = geometry_buffer.address(&u.device),
+            .ranges = range_buffer.address(&u.device),
+            .materials = device_materials.address(&u.device),
         };
-        const descriptor_pool = try emma.vlk_descriptor_pool.init(
+
+        const tlas = try emma.rt_acceleration_structure.init_tlas(
+            allocator,
+            &u.vma,
             &u.device,
-            &descriptor_sizes,
-            1,
-            .{ .update_after_bind_bit = true },
+            blas_list.items,
+            instance_transforms.items,
+            .{},
+            &staging_pool,
+            is,
         );
-        defer descriptor_pool.deinit(u.device.logical_device);
+        defer tlas.deinit(&u.vma, &u.device);
 
-        //create texture
-        const render_texture_width = scene_config.settings.resolution[0];
-        const render_texture_height = scene_config.settings.resolution[1];
-        const render_extent = emma.vk.Extent3D{
-            .width = render_texture_width,
-            .height = render_texture_height,
-            .depth = 1,
+        const rt_props = emma.vlk_get_raytracing_properties(&u.vki, &u.device);
+
+        const file = try std.Io.Dir.cwd().openFile(io, "./src/shaders/hw_raytracing/shader.spv", .{});
+        defer file.close(io);
+
+        const spirv = try emma.readfile_alloc(allocator, io, file);
+        defer allocator.free(spirv);
+
+        const hw_rt_module = try u.device.logical_device.createShaderModule(
+            &.{
+                .code_size = spirv.len,
+                .p_code = @ptrCast(@alignCast(spirv.ptr)),
+            },
+            null,
+        );
+        defer u.device.logical_device.destroyShaderModule(hw_rt_module, null);
+        const hw_rt_stages = [_]emma.vlk_shader_stage{
+            emma.vlk_shader_stage.init(
+                .{ .raygen_bit_khr = true },
+                "raygen_entry",
+                hw_rt_module,
+            ),
+            emma.vlk_shader_stage.init(
+                .{ .miss_bit_khr = true },
+                "miss_entry",
+                hw_rt_module,
+            ),
+            emma.vlk_shader_stage.init(
+                .{ .closest_hit_bit_khr = true },
+                "closest_hit_entry",
+                hw_rt_module,
+            ),
+            emma.vlk_shader_stage.init(
+                .{ .closest_hit_bit_khr = true },
+                "shadow_closest_hit_entry",
+                hw_rt_module,
+            ),
+            emma.vlk_shader_stage.init(
+                .{ .miss_bit_khr = true },
+                "shadow_miss_entry",
+                hw_rt_module,
+            ),
         };
 
-        const render_texture = try emma.vlk_image.init(&u.vma, &u.device, .r32g32b32a32_sfloat, .{
-            .transfer_dst_bit = true,
-            .transfer_src_bit = true,
-            .sampled_bit = true,
-            .storage_bit = true,
-        }, .{
-            .color_bit = true,
-        }, render_extent, false);
+        var rt = try HW_raytracing_pipeline.init(allocator, &u, &rt_props, &hw_rt_stages, is);
+        defer rt.deinit(allocator, &u);
 
-        defer render_texture.deinit(&u.vma, &u.device);
-        const render_texture_resource = emma.Resource{
-            .handle = 100,
-            .data = .{ .texture = &render_texture },
-        };
-        try resource_manager.last_state.put(allocator, render_texture_resource.handle, emma.Resource.Access{
-            .resource = &render_texture_resource,
-            .stage = .{ .top_of_pipe_bit = true },
-            .access = .{},
-            .layout = .undefined,
-        });
+        std.debug.print("Created pipeline successfully \n", .{});
+        //
 
-        const alloc_info = vk.DescriptorSetAllocateInfo{
-            .descriptor_pool = descriptor_pool.handle,
-            .descriptor_set_count = @intCast(rt.pipeline.pipeline.descriptor_set_layouts.len),
-            .p_set_layouts = rt.pipeline.pipeline.descriptor_set_layouts.ptr,
-        };
-        var sets = [_]vk.DescriptorSet{
-            undefined,
-        };
-        try u.device.logical_device.allocateDescriptorSets(&alloc_info, &sets);
-
+        var resource_manager = emma.Resource_Manager.init();
+        defer resource_manager.deinit(allocator);
         {
-            const tlas_descriptor_info = vk.WriteDescriptorSetAccelerationStructureKHR{
-                .acceleration_structure_count = 1,
-                .p_acceleration_structures = &[_]vk.AccelerationStructureKHR{tlas.handle},
+            const descriptor_sizes = [_]vk.DescriptorPoolSize{
+                .{ .descriptor_count = 10, .type = .combined_image_sampler },
+                .{ .descriptor_count = 10, .type = .storage_image },
+                .{ .descriptor_count = 10, .type = .acceleration_structure_khr },
             };
-            const image_info = vk.DescriptorImageInfo{
-                .image_view = render_texture.view,
-                .image_layout = vk.ImageLayout.general,
-                .sampler = u.samplers.linear_clamp,
-            };
-            const writes = [_]vk.WriteDescriptorSet{
-                .{
-                    .dst_set = sets[0],
-                    .dst_binding = 0,
-                    .dst_array_element = 0,
-                    .descriptor_count = 1,
-                    .descriptor_type = .acceleration_structure_khr,
-                    .p_buffer_info = undefined,
-                    .p_image_info = undefined,
-                    .p_texel_buffer_view = undefined,
-                    .p_next = &tlas_descriptor_info,
-                },
-                .{
-                    .dst_set = sets[0],
-                    .dst_binding = 1,
-                    .descriptor_count = 1,
-                    .dst_array_element = 0,
-                    .descriptor_type = .storage_image,
-                    .p_texel_buffer_view = undefined,
-                    .p_image_info = @ptrCast(&.{image_info}),
-                    .p_buffer_info = undefined,
-                },
-            };
-            u.device.logical_device.updateDescriptorSets(&writes, null);
-        }
-        const rt_pipeline_instance = rt.pipeline.pipeline.instance(sets[0..]);
-        _ = rt_pipeline_instance;
-
-        {
-            var swapchain = try emma.vlk_swapchain.init(
-                allocator,
-                &u,
-                @intCast(width),
-                @intCast(height),
-            );
-            defer swapchain.deinit(&u.device);
-
-            var frames = try emma.vlk_frames.init(
-                allocator,
+            const descriptor_pool = try emma.vlk_descriptor_pool.init(
                 &u.device,
-                cmd_pool.handle,
-                emma.max_frames_in_flight,
+                &descriptor_sizes,
+                1,
+                .{ .update_after_bind_bit = true },
             );
-            defer frames.deinit(u.device.logical_device);
+            defer descriptor_pool.deinit(u.device.logical_device);
 
-            var quit = false;
-
-            const render_begin_ms = std.Io.Timestamp.now(io, clock).toMilliseconds();
-            var time_ms = render_begin_ms;
-            var time_sec: f32 = @as(f32, @floatFromInt(time_ms)) / 1000;
-
-            var samples: i32 = 0;
-
-            const image_available = try allocator.alloc(vk.Semaphore, swapchain.images.len);
-            @memset(image_available, .null_handle);
-            defer {
-                for (image_available) |s| {
-                    if (s != .null_handle) u.device.logical_device.destroySemaphore(s, null);
-                }
-                allocator.free(image_available);
-            }
-
-            const render_finished = try allocator.alloc(vk.Semaphore, swapchain.images.len);
-            for (render_finished) |*s| {
-                s.* = try u.device.logical_device.createSemaphore(&.{}, null);
-            }
-            defer {
-                for (render_finished) |s| {
-                    u.device.logical_device.destroySemaphore(s, null);
-                }
-                allocator.free(render_finished);
-            }
-
-            var acquire_semaphore = try u.device.logical_device.createSemaphore(&.{}, null);
-            defer u.device.logical_device.destroySemaphore(acquire_semaphore, null);
-
-            var frame_counter: u32 = 0;
-            var flush_render_texture: bool = true;
-            var accumilation_frame_counter: u32 = 0;
-
-            const tile_pixel_strides = scene_config.settings.render_tile;
-            var tiles = [2]emma.TileElm{
-                emma.TileElm.init(tile_pixel_strides[0], render_texture_width),
-                emma.TileElm.init(tile_pixel_strides[1], render_texture_height),
+            //create texture
+            const render_texture_width = scene_config.settings.resolution[0];
+            const render_texture_height = scene_config.settings.resolution[1];
+            const render_extent = emma.vk.Extent3D{
+                .width = render_texture_width,
+                .height = render_texture_height,
+                .depth = 1,
             };
 
-            var last_present_ms: i64 = 0;
-            var avg_ms: f64 = 0.0;
-            var avg_n: f64 = 0.0;
+            const render_texture = try emma.vlk_image.init(&u.vma, &u.device, .r32g32b32a32_sfloat, .{
+                .transfer_dst_bit = true,
+                .transfer_src_bit = true,
+                .sampled_bit = true,
+                .storage_bit = true,
+            }, .{
+                .color_bit = true,
+            }, render_extent, false);
 
-            var done = false;
+            defer render_texture.deinit(&u.vma, &u.device);
+            const render_texture_resource = emma.Resource{
+                .handle = 100,
+                .data = .{ .texture = &render_texture },
+            };
+            try resource_manager.last_state.put(allocator, render_texture_resource.handle, emma.Resource.Access{
+                .resource = &render_texture_resource,
+                .stage = .{ .top_of_pipe_bit = true },
+                .access = .{},
+                .layout = .undefined,
+            });
 
-            const swapchain_resources = try allocator.alloc(emma.Resource, swapchain.images.len);
-            for (swapchain.images, 0..) |img, i| {
-                _ = img;
-                swapchain_resources[i] = emma.Resource{
-                    .handle = @intCast(i),
-                    .data = .{ .texture = &swapchain.images[i] },
-                };
-            }
+            const alloc_info = vk.DescriptorSetAllocateInfo{
+                .descriptor_pool = descriptor_pool.handle,
+                .descriptor_set_count = @intCast(rt.pipeline.pipeline.descriptor_set_layouts.len),
+                .p_set_layouts = rt.pipeline.pipeline.descriptor_set_layouts.ptr,
+            };
+            var sets = [_]vk.DescriptorSet{
+                undefined,
+            };
+            try u.device.logical_device.allocateDescriptorSets(&alloc_info, &sets);
 
-            var initial_pass = emma.Pass.init();
             {
-                try initial_pass.writes.put(
+                const tlas_descriptor_info = vk.WriteDescriptorSetAccelerationStructureKHR{
+                    .acceleration_structure_count = 1,
+                    .p_acceleration_structures = &[_]vk.AccelerationStructureKHR{tlas.handle},
+                };
+                const image_info = vk.DescriptorImageInfo{
+                    .image_view = render_texture.view,
+                    .image_layout = vk.ImageLayout.general,
+                    .sampler = u.samplers.linear_clamp,
+                };
+                const writes = [_]vk.WriteDescriptorSet{
+                    .{
+                        .dst_set = sets[0],
+                        .dst_binding = 0,
+                        .dst_array_element = 0,
+                        .descriptor_count = 1,
+                        .descriptor_type = .acceleration_structure_khr,
+                        .p_buffer_info = undefined,
+                        .p_image_info = undefined,
+                        .p_texel_buffer_view = undefined,
+                        .p_next = &tlas_descriptor_info,
+                    },
+                    .{
+                        .dst_set = sets[0],
+                        .dst_binding = 1,
+                        .descriptor_count = 1,
+                        .dst_array_element = 0,
+                        .descriptor_type = .storage_image,
+                        .p_texel_buffer_view = undefined,
+                        .p_image_info = @ptrCast(&.{image_info}),
+                        .p_buffer_info = undefined,
+                    },
+                };
+                u.device.logical_device.updateDescriptorSets(&writes, null);
+            }
+            const rt_pipeline_instance = rt.pipeline.pipeline.instance(sets[0..]);
+            _ = rt_pipeline_instance;
+
+            {
+                var swapchain = try emma.vlk_swapchain.init(
                     allocator,
-                    render_texture_resource.handle,
-                    emma.Resource.Access{
-                        .resource = &render_texture_resource,
+                    &u,
+                    @intCast(width),
+                    @intCast(height),
+                );
+                defer swapchain.deinit(&u.device);
+
+                var frames = try emma.vlk_frames.init(
+                    allocator,
+                    &u.device,
+                    cmd_pool.handle,
+                    emma.max_frames_in_flight,
+                );
+                defer frames.deinit(u.device.logical_device);
+
+                var quit = false;
+
+                const render_begin_ms = std.Io.Timestamp.now(io, clock).toMilliseconds();
+                var time_ms = render_begin_ms;
+                var time_sec: f32 = @as(f32, @floatFromInt(time_ms)) / 1000;
+
+                var samples: i32 = 0;
+
+                const image_available = try allocator.alloc(vk.Semaphore, swapchain.images.len);
+                @memset(image_available, .null_handle);
+                defer {
+                    for (image_available) |s| {
+                        if (s != .null_handle) u.device.logical_device.destroySemaphore(s, null);
+                    }
+                    allocator.free(image_available);
+                }
+
+                const render_finished = try allocator.alloc(vk.Semaphore, swapchain.images.len);
+                for (render_finished) |*s| {
+                    s.* = try u.device.logical_device.createSemaphore(&.{}, null);
+                }
+                defer {
+                    for (render_finished) |s| {
+                        u.device.logical_device.destroySemaphore(s, null);
+                    }
+                    allocator.free(render_finished);
+                }
+
+                var acquire_semaphore = try u.device.logical_device.createSemaphore(&.{}, null);
+                defer u.device.logical_device.destroySemaphore(acquire_semaphore, null);
+
+                var frame_counter: u32 = 0;
+                var flush_render_texture: bool = true;
+                var accumilation_frame_counter: u32 = 0;
+
+                const tile_pixel_strides = scene_config.settings.render_tile;
+                var tiles = [2]emma.TileElm{
+                    emma.TileElm.init(tile_pixel_strides[0], render_texture_width),
+                    emma.TileElm.init(tile_pixel_strides[1], render_texture_height),
+                };
+
+                var last_present_ms: i64 = 0;
+                var avg_ms: f64 = 0.0;
+                var avg_n: f64 = 0.0;
+
+                var done = false;
+
+                const swapchain_resources = try allocator.alloc(emma.Resource, swapchain.images.len);
+                defer allocator.free(swapchain_resources);
+
+                for (swapchain.images, 0..) |img, i| {
+                    _ = img;
+                    swapchain_resources[i] = emma.Resource{
+                        .handle = @intCast(i),
+                        .data = .{ .texture = &swapchain.images[i] },
+                    };
+                }
+
+                var initial_pass = emma.Pass.init();
+                defer initial_pass.deinit(allocator);
+                {
+                    try initial_pass.writes.put(
+                        allocator,
+                        render_texture_resource.handle,
+                        emma.Resource.Access{
+                            .resource = &render_texture_resource,
+                            .stage = .{ .top_of_pipe_bit = true },
+                            .access = .{},
+                            .layout = .undefined,
+                        },
+                    );
+                }
+                var clear_pass = try emma.Clear_pass.init(allocator, &render_texture_resource);
+                defer clear_pass.deinit(allocator);
+
+                var rt_pass = try emma.HW_rt_pass.init(allocator, &render_texture_resource);
+                defer rt_pass.deinit(allocator);
+
+                const blit_passes = try allocator.alloc(emma.Blit_pass, swapchain.images.len);
+                defer {
+                    for (blit_passes) |*p| p.pass.deinit(allocator);
+                    allocator.free(blit_passes);
+                }
+
+                const present_passes = try allocator.alloc(emma.Present_pass, swapchain.images.len);
+                defer {
+                    for (present_passes) |*p| p.pass.deinit(allocator);
+                    allocator.free(present_passes);
+                }
+
+                for (0..swapchain.images.len) |i| {
+                    blit_passes[i] = try emma.Blit_pass.init(allocator, &swapchain_resources[i], &render_texture_resource);
+                    present_passes[i] = try emma.Present_pass.init(allocator, &swapchain_resources[i]);
+                }
+
+                for (0..swapchain.images.len) |i| {
+                    try resource_manager.last_state.put(allocator, swapchain_resources[i].handle, emma.Resource.Access{
+                        .resource = &swapchain_resources[i],
                         .stage = .{ .top_of_pipe_bit = true },
                         .access = .{},
                         .layout = .undefined,
-                    },
-                );
-            }
-            var clear_pass = try emma.Clear_pass.init(allocator, &render_texture_resource);
-            var rt_pass = try emma.HW_rt_pass.init(allocator, &render_texture_resource);
+                    });
+                }
 
-            const blit_passes = try allocator.alloc(emma.Blit_pass, swapchain.images.len);
-            const present_passes = try allocator.alloc(emma.Present_pass, swapchain.images.len);
-
-            for (0..swapchain.images.len) |i| {
-                blit_passes[i] = try emma.Blit_pass.init(allocator, &swapchain_resources[i], &render_texture_resource);
-                present_passes[i] = try emma.Present_pass.init(allocator, &swapchain_resources[i]);
-            }
-
-            for (0..swapchain.images.len) |i| {
-                try resource_manager.last_state.put(allocator, swapchain_resources[i].handle, emma.Resource.Access{
-                    .resource = &swapchain_resources[i],
-                    .stage = .{ .top_of_pipe_bit = true },
-                    .access = .{},
-                    .layout = .undefined,
-                });
-            }
-
-            while (!quit) {
-                // Event handling
+                // rendering looop
                 {
-                    while (sdl.events.poll()) |event| {
-                        switch (event) {
-                            .quit => quit = true,
-                            .terminating => quit = true,
-                            .mouse_motion => |mm| {
-                                mouse = .{ .x = mm.x, .y = mm.y };
-                            },
-                            .key_down => |key| key_state[@intFromEnum(key.scancode.?)] = true,
-                            .key_up => |key| key_state[@intFromEnum(key.scancode.?)] = false,
-                            .window_resized => |e| {
-                                swapchain.resize(&u, @intCast(e.width), @intCast(e.height));
-                                // update swapchain resources to point to new images
-                                for (swapchain.images, 0..) |_, i| {
-                                    swapchain_resources[i].data.texture = &swapchain.images[i];
+                    while (!quit) {
+                        // Event handling
+                        {
+                            while (sdl.events.poll()) |event| {
+                                switch (event) {
+                                    .quit => quit = true,
+                                    .terminating => quit = true,
+                                    .mouse_motion => |mm| {
+                                        mouse = .{ .x = mm.x, .y = mm.y };
+                                    },
+                                    .key_down => |key| key_state[@intFromEnum(key.scancode.?)] = true,
+                                    .key_up => |key| key_state[@intFromEnum(key.scancode.?)] = false,
+                                    .window_resized => |e| {
+                                        swapchain.resize(&u, @intCast(e.width), @intCast(e.height));
+                                        // update swapchain resources to point to new images
+                                        for (swapchain.images, 0..) |_, i| {
+                                            swapchain_resources[i].data.texture = &swapchain.images[i];
+                                        }
+
+                                        for (0..swapchain.images.len) |i| {
+                                            try resource_manager.last_state.put(allocator, swapchain_resources[i].handle, emma.Resource.Access{
+                                                .resource = &swapchain_resources[i],
+                                                .stage = .{ .top_of_pipe_bit = true },
+                                                .access = .{},
+                                                .layout = .undefined,
+                                            });
+                                            blit_passes[i].pass.deinit(allocator);
+                                            present_passes[i].pass.deinit(allocator);
+
+                                            blit_passes[i] = try emma.Blit_pass.init(allocator, &swapchain_resources[i], &render_texture_resource);
+                                            present_passes[i] = try emma.Present_pass.init(allocator, &swapchain_resources[i]);
+                                        }
+                                    },
+                                    else => {},
+                                }
+                            }
+                        }
+
+                        if (key_state[@intFromEnum(sdl.Scancode.func5)]) {
+                            flush_render_texture = true;
+                        }
+
+                        // Frame  setup
+                        const frame = frames.current();
+                        try frame.fence.wait_and_reset(u.device.logical_device);
+
+                        const now_time_ms = std.Io.Timestamp.now(io, clock).toMilliseconds() - render_begin_ms;
+                        const now_time_sec = @as(f32, @floatFromInt(now_time_ms)) / 1000;
+                        const dt = now_time_ms - time_ms;
+                        _ = dt;
+
+                        time_ms = now_time_ms;
+                        time_sec = now_time_sec;
+
+                        //Commands
+                        {
+                            try emma.vlk_cmd_begin_one(frame.cmd);
+
+                            if (flush_render_texture) {
+                                try resource_manager.cmd_emit_barriers(allocator, &clear_pass.pass, frame.cmd);
+
+                                accumilation_frame_counter = 0;
+                                flush_render_texture = false;
+
+                                const ranges = [_]vk.ImageSubresourceRange{render_texture.full_subresource_range()};
+                                frame.cmd.clearColorImage(
+                                    render_texture.handle,
+                                    .general,
+                                    @ptrCast(&vk.ClearColorValue{ .float_32 = .{ 0, 0, 0, 1 } }),
+                                    &ranges,
+                                );
+                            }
+                            // rendering
+                            if (!done) {
+                                try resource_manager.cmd_emit_barriers(allocator, &rt_pass.pass, frame.cmd);
+                                {
+                                    pc2.width = @intCast(render_texture_width);
+                                    pc2.height = @intCast(render_texture_height);
+                                    pc2.time = time_sec;
+                                    pc2.posx = tiles[0].pos;
+                                    pc2.posy = tiles[1].pos;
+                                    pc2.mouse = mouse;
+                                    pc2.frame = accumilation_frame_counter;
                                 }
 
-                                for (0..swapchain.images.len) |i| {
-                                    try resource_manager.last_state.put(allocator, swapchain_resources[i].handle, emma.Resource.Access{
-                                        .resource = &swapchain_resources[i],
-                                        .stage = .{ .top_of_pipe_bit = true },
-                                        .access = .{},
-                                        .layout = .undefined,
+                                frame.cmd.bindPipeline(.ray_tracing_khr, rt.pipeline.pipeline.handle);
+                                frame.cmd.bindDescriptorSets(
+                                    .ray_tracing_khr,
+                                    rt.pipeline.pipeline.layout,
+                                    0,
+                                    &sets,
+                                    null,
+                                );
+                                frame.cmd.pushConstants(
+                                    rt.pipeline.pipeline.layout,
+                                    .{
+                                        .raygen_bit_khr = true,
+                                        .miss_bit_khr = true,
+                                        .closest_hit_bit_khr = true,
+                                    },
+                                    0,
+                                    @sizeOf(@TypeOf(pc2)),
+                                    &pc2,
+                                );
+                                frame.cmd.traceRaysKHR(
+                                    &rt.pipeline.sbt.raygen_region,
+                                    &rt.pipeline.sbt.miss_region,
+                                    &rt.pipeline.sbt.closest_hit_region,
+                                    &rt.pipeline.sbt.callable_region,
+                                    @intCast(tiles[0].len),
+                                    @intCast(tiles[1].len),
+                                    1,
+                                );
+
+                                {
+                                    tiles[0] = tiles[0].next(tile_pixel_strides[0], render_texture_width);
+                                    if (tiles[0].pos == 0)
+                                        tiles[1] = tiles[1].next(tile_pixel_strides[1], render_texture_height);
+                                }
+                            }
+                            const frame_done = (tiles[0].pos == 0 and tiles[1].pos == 0);
+
+                            if (frame_done and !done) {
+                                const last_present_diff = now_time_ms - last_present_ms;
+                                samples += 1;
+                                frame_counter += 1;
+                                accumilation_frame_counter += 1;
+
+                                last_present_ms = now_time_ms;
+
+                                avg_n += 1;
+                                avg_ms += (@as(f64, @floatFromInt(last_present_diff)) - avg_ms) / avg_n;
+
+                                const next_swapchain_image = try u.device.logical_device.acquireNextImageKHR(
+                                    swapchain.handle,
+                                    std.math.maxInt(u64),
+                                    acquire_semaphore,
+                                    .null_handle,
+                                );
+
+                                const image_index = next_swapchain_image.image_index;
+                                const prev = image_available[image_index];
+                                image_available[image_index] = acquire_semaphore;
+                                acquire_semaphore = if (prev != .null_handle) prev else try u.device.logical_device.createSemaphore(&.{}, null);
+                                const wait_semaphore = image_available[image_index];
+                                const swapchain_image = swapchain.images[image_index];
+
+                                // Blit
+                                {
+                                    try resource_manager.cmd_emit_barriers(allocator, &blit_passes[image_index].pass, frame.cmd);
+                                    const subrange = render_texture.full_subresource_range();
+                                    const subrange_swapchain = swapchain_image.full_subresource_range();
+                                    const blit_region = vk.ImageBlit2{
+                                        .src_subresource = .{
+                                            .aspect_mask = subrange.aspect_mask,
+                                            .mip_level = 0,
+                                            .base_array_layer = 0,
+                                            .layer_count = subrange.layer_count,
+                                        },
+                                        .src_offsets = .{
+                                            .{ .x = 0, .y = 0, .z = 0 },
+                                            .{
+                                                .x = @intCast(render_texture.extent.width),
+                                                .y = @intCast(render_texture.extent.height),
+                                                .z = 1,
+                                            },
+                                        },
+                                        .dst_subresource = .{
+                                            .aspect_mask = subrange_swapchain.aspect_mask,
+                                            .mip_level = 0,
+                                            .base_array_layer = 0,
+                                            .layer_count = subrange_swapchain.layer_count,
+                                        },
+                                        .dst_offsets = .{
+                                            .{ .x = 0, .y = 0, .z = 0 },
+                                            .{
+                                                .x = @intCast(swapchain.extent.width),
+                                                .y = @intCast(swapchain.extent.height),
+                                                .z = 1,
+                                            },
+                                        },
+                                    };
+                                    frame.cmd.blitImage2(
+                                        &.{
+                                            .src_image = render_texture.handle,
+                                            .src_image_layout = .transfer_src_optimal,
+                                            .dst_image = swapchain_image.handle,
+                                            .dst_image_layout = .transfer_dst_optimal,
+                                            .region_count = 1,
+                                            .p_regions = @ptrCast(&blit_region),
+                                            .filter = .nearest,
+                                        },
+                                    );
+                                }
+
+                                //Present barriers
+                                try resource_manager.cmd_emit_barriers(allocator, &present_passes[image_index].pass, frame.cmd);
+
+                                try frame.cmd.endCommandBuffer();
+                                // Submit
+                                {
+                                    const wait_stage = vk.PipelineStageFlags{ .all_commands_bit = true };
+                                    const submit_info = [_]vk.SubmitInfo{
+                                        .{
+                                            .p_command_buffers = @ptrCast(&frame.cmd.handle),
+                                            .command_buffer_count = 1,
+                                            .wait_semaphore_count = 1,
+                                            .p_wait_semaphores = @ptrCast(&wait_semaphore),
+                                            .p_wait_dst_stage_mask = @ptrCast(&wait_stage),
+                                            .signal_semaphore_count = 1,
+                                            .p_signal_semaphores = @ptrCast(&render_finished[image_index]),
+                                        },
+                                    };
+                                    try u.device.queue.submit(&submit_info, frame.fence.handle);
+                                }
+
+                                //Present
+                                {
+                                    _ = try u.device.queue.presentKHR(&.{
+                                        .wait_semaphore_count = 1,
+                                        .p_wait_semaphores = @ptrCast(&render_finished[image_index]),
+                                        .swapchain_count = 1,
+                                        .p_swapchains = @ptrCast(&swapchain.handle),
+                                        .p_image_indices = @ptrCast(&image_index),
                                     });
-                                    // blit_passes[i].pass.deinit(allocator);
-                                    // present_passes[i].pass.deinit(allocator);
-                                    blit_passes[i] = try emma.Blit_pass.init(allocator, &swapchain_resources[i], &render_texture_resource);
-                                    present_passes[i] = try emma.Present_pass.init(allocator, &swapchain_resources[i]);
                                 }
-                            },
-                            else => {},
-                        }
-                    }
-                }
-
-                if (key_state[@intFromEnum(sdl.Scancode.func5)]) {
-                    flush_render_texture = true;
-                }
-
-                // Frame  setup
-                const frame = frames.current();
-                try frame.fence.wait_and_reset(u.device.logical_device);
-
-                const now_time_ms = std.Io.Timestamp.now(io, clock).toMilliseconds() - render_begin_ms;
-                const now_time_sec = @as(f32, @floatFromInt(now_time_ms)) / 1000;
-                const dt = now_time_ms - time_ms;
-                _ = dt;
-
-                time_ms = now_time_ms;
-                time_sec = now_time_sec;
-
-                //Commands
-                {
-                    try emma.vlk_cmd_begin_one(frame.cmd);
-
-                    if (flush_render_texture) {
-                        try resource_manager.cmd_emit_barriers(allocator, &clear_pass.pass, frame.cmd);
-
-                        accumilation_frame_counter = 0;
-                        flush_render_texture = false;
-
-                        const ranges = [_]vk.ImageSubresourceRange{render_texture.full_subresource_range()};
-                        frame.cmd.clearColorImage(
-                            render_texture.handle,
-                            .general,
-                            @ptrCast(&vk.ClearColorValue{ .float_32 = .{ 0, 0, 0, 1 } }),
-                            &ranges,
-                        );
-                    }
-                    // rendering
-                    if (!done) {
-                        try resource_manager.cmd_emit_barriers(allocator, &rt_pass.pass, frame.cmd);
-                        {
-                            pc2.width = @intCast(render_texture_width);
-                            pc2.height = @intCast(render_texture_height);
-                            pc2.time = time_sec;
-                            pc2.posx = tiles[0].pos;
-                            pc2.posy = tiles[1].pos;
-                            pc2.mouse = mouse;
-                            pc2.frame = accumilation_frame_counter;
-                        }
-
-                        frame.cmd.bindPipeline(.ray_tracing_khr, rt.pipeline.pipeline.handle);
-                        frame.cmd.bindDescriptorSets(
-                            .ray_tracing_khr,
-                            rt.pipeline.pipeline.layout,
-                            0,
-                            &sets,
-                            null,
-                        );
-                        frame.cmd.pushConstants(
-                            rt.pipeline.pipeline.layout,
-                            .{
-                                .raygen_bit_khr = true,
-                                .miss_bit_khr = true,
-                                .closest_hit_bit_khr = true,
-                            },
-                            0,
-                            @sizeOf(@TypeOf(pc2)),
-                            &pc2,
-                        );
-                        frame.cmd.traceRaysKHR(
-                            &rt.pipeline.sbt.raygen_region,
-                            &rt.pipeline.sbt.miss_region,
-                            &rt.pipeline.sbt.closest_hit_region,
-                            &rt.pipeline.sbt.callable_region,
-                            @intCast(tiles[0].len),
-                            @intCast(tiles[1].len),
-                            1,
-                        );
-
-                        {
-                            tiles[0] = tiles[0].next(tile_pixel_strides[0], render_texture_width);
-                            if (tiles[0].pos == 0)
-                                tiles[1] = tiles[1].next(tile_pixel_strides[1], render_texture_height);
-                        }
-                    }
-                    const frame_done = (tiles[0].pos == 0 and tiles[1].pos == 0);
-
-                    if (frame_done and !done) {
-                        const last_present_diff = now_time_ms - last_present_ms;
-                        samples += 1;
-                        frame_counter += 1;
-                        accumilation_frame_counter += 1;
-
-                        last_present_ms = now_time_ms;
-
-                        avg_n += 1;
-                        avg_ms += (@as(f64, @floatFromInt(last_present_diff)) - avg_ms) / avg_n;
-
-                        const next_swapchain_image = try u.device.logical_device.acquireNextImageKHR(
-                            swapchain.handle,
-                            std.math.maxInt(u64),
-                            acquire_semaphore,
-                            .null_handle,
-                        );
-
-                        const image_index = next_swapchain_image.image_index;
-                        const prev = image_available[image_index];
-                        image_available[image_index] = acquire_semaphore;
-                        acquire_semaphore = if (prev != .null_handle) prev else try u.device.logical_device.createSemaphore(&.{}, null);
-                        const wait_semaphore = image_available[image_index];
-                        const swapchain_image = swapchain.images[image_index];
-
-                        // Blit
-                        {
-                            try resource_manager.cmd_emit_barriers(allocator, &blit_passes[image_index].pass, frame.cmd);
-                            const subrange = render_texture.full_subresource_range();
-                            const subrange_swapchain = swapchain_image.full_subresource_range();
-                            const blit_region = vk.ImageBlit2{
-                                .src_subresource = .{
-                                    .aspect_mask = subrange.aspect_mask,
-                                    .mip_level = 0,
-                                    .base_array_layer = 0,
-                                    .layer_count = subrange.layer_count,
-                                },
-                                .src_offsets = .{
-                                    .{ .x = 0, .y = 0, .z = 0 },
-                                    .{
-                                        .x = @intCast(render_texture.extent.width),
-                                        .y = @intCast(render_texture.extent.height),
-                                        .z = 1,
-                                    },
-                                },
-                                .dst_subresource = .{
-                                    .aspect_mask = subrange_swapchain.aspect_mask,
-                                    .mip_level = 0,
-                                    .base_array_layer = 0,
-                                    .layer_count = subrange_swapchain.layer_count,
-                                },
-                                .dst_offsets = .{
-                                    .{ .x = 0, .y = 0, .z = 0 },
-                                    .{
-                                        .x = @intCast(swapchain.extent.width),
-                                        .y = @intCast(swapchain.extent.height),
-                                        .z = 1,
-                                    },
-                                },
-                            };
-                            frame.cmd.blitImage2(
-                                &.{
-                                    .src_image = render_texture.handle,
-                                    .src_image_layout = .transfer_src_optimal,
-                                    .dst_image = swapchain_image.handle,
-                                    .dst_image_layout = .transfer_dst_optimal,
-                                    .region_count = 1,
-                                    .p_regions = @ptrCast(&blit_region),
-                                    .filter = .nearest,
-                                },
-                            );
-                        }
-
-                        //Present barriers
-                        try resource_manager.cmd_emit_barriers(allocator, &present_passes[image_index].pass, frame.cmd);
-
-                        try frame.cmd.endCommandBuffer();
-                        // Submit
-                        {
-                            const wait_stage = vk.PipelineStageFlags{ .all_commands_bit = true };
-                            const submit_info = [_]vk.SubmitInfo{
-                                .{
-                                    .p_command_buffers = @ptrCast(&frame.cmd.handle),
+                                // frame_counter += 1;
+                            } else {
+                                try frame.cmd.endCommandBuffer();
+                                const submit_info = vk.SubmitInfo{
                                     .command_buffer_count = 1,
-                                    .wait_semaphore_count = 1,
-                                    .p_wait_semaphores = @ptrCast(&wait_semaphore),
-                                    .p_wait_dst_stage_mask = @ptrCast(&wait_stage),
-                                    .signal_semaphore_count = 1,
-                                    .p_signal_semaphores = @ptrCast(&render_finished[image_index]),
-                                },
-                            };
-                            try u.device.queue.submit(&submit_info, frame.fence.handle);
+                                    .p_command_buffers = @ptrCast(&frame.cmd.handle),
+                                    // no wait/signal semaphores
+                                };
+                                try u.device.queue.submit(&[1]vk.SubmitInfo{submit_info}, frame.fence.handle);
+                            }
                         }
+                        frames.advance();
 
-                        //Present
+                        done = (accumilation_frame_counter > 1024);
+                    }
+
+                    {
+                        time_ms = std.Io.Timestamp.now(io, clock).toMilliseconds() - render_begin_ms;
+                        time_sec = @as(f32, @floatFromInt(time_ms)) / 1000;
+                        std.debug.print("ran for {d} with avg ms per full frame {d:.3} avg fps {d:.3}\n", .{ time_sec, avg_ms, 1000.0 / avg_ms });
+                    }
+
+                    try u.device.logical_device.deviceWaitIdle();
+                    {
+                        var readback = try emma.vlk_readback_buffer(
+                            &u.vma,
+                            render_texture.extent.width * render_texture.extent.height * 4 * @sizeOf(f32),
+                        );
+                        defer readback.deinit(&u.vma);
+
+                        const region = vk.BufferImageCopy{
+                            .buffer_offset = 0,
+                            .buffer_row_length = 0,
+                            .buffer_image_height = 0,
+                            .image_subresource = .{
+                                .aspect_mask = .{ .color_bit = true },
+                                .mip_level = 0,
+                                .base_array_layer = 0,
+                                .layer_count = 1,
+                            },
+                            .image_offset = .{ .x = 0, .y = 0, .z = 0 },
+                            .image_extent = render_texture.extent,
+                        };
+
                         {
-                            _ = try u.device.queue.presentKHR(&.{
-                                .wait_semaphore_count = 1,
-                                .p_wait_semaphores = @ptrCast(&render_finished[image_index]),
-                                .swapchain_count = 1,
-                                .p_swapchains = @ptrCast(&swapchain.handle),
-                                .p_image_indices = @ptrCast(&image_index),
-                            });
-                        }
-                        // frame_counter += 1;
-                    } else {
-                        try frame.cmd.endCommandBuffer();
-                        const submit_info = vk.SubmitInfo{
-                            .command_buffer_count = 1,
-                            .p_command_buffers = @ptrCast(&frame.cmd.handle),
-                            // no wait/signal semaphores
-                        };
-                        try u.device.queue.submit(&[1]vk.SubmitInfo{submit_info}, frame.fence.handle);
-                    }
-                }
-                frames.advance();
-
-                done = (accumilation_frame_counter > 1024);
-            }
-
-            {
-                time_ms = std.Io.Timestamp.now(io, clock).toMilliseconds() - render_begin_ms;
-                time_sec = @as(f32, @floatFromInt(time_ms)) / 1000;
-                std.debug.print("ran for {d} with avg ms per full frame {d:.3} avg fps {d:.3}\n", .{ time_sec, avg_ms, 1000.0 / avg_ms });
-            }
-
-            try u.device.logical_device.deviceWaitIdle();
-            {
-                var readback = try emma.vlk_readback_buffer(
-                    &u.vma,
-                    render_texture.extent.width * render_texture.extent.height * 4 * @sizeOf(f32),
-                );
-                defer readback.deinit(&u.vma);
-
-                const region = vk.BufferImageCopy{
-                    .buffer_offset = 0,
-                    .buffer_row_length = 0,
-                    .buffer_image_height = 0,
-                    .image_subresource = .{
-                        .aspect_mask = .{ .color_bit = true },
-                        .mip_level = 0,
-                        .base_array_layer = 0,
-                        .layer_count = 1,
-                    },
-                    .image_offset = .{ .x = 0, .y = 0, .z = 0 },
-                    .image_extent = render_texture.extent,
-                };
-
-                {
-                    try is.begin();
-                    {
-                        const access = emma.Resource.Access{
-                            .resource = &render_texture_resource,
-                            .stage = .{ .all_transfer_bit = true },
-                            .access = .{ .transfer_read_bit = true },
-                            .layout = .transfer_src_optimal,
-                        };
-                        if (emma.make_barrier(resource_manager.last_state.get(render_texture_resource.handle).?, access)) |b| {
-                            emma.cmd_pipeline_barrier2(is.cmd, &.{b.image}, &.{}, &.{});
-                        }
-                    }
-                    is.cmd.copyImageToBuffer(
-                        render_texture.handle,
-                        .transfer_src_optimal,
-                        readback.handle,
-                        &[_]vk.BufferImageCopy{region},
-                    );
-                    {
-                        const barriers = [_]emma.vk.ImageMemoryBarrier2{
-                            render_texture.image_barrier(
-                                .{ .all_transfer_bit = true },
-                                .{ .ray_tracing_shader_bit_khr = true },
-                                .{ .transfer_read_bit = true },
-                                .{ .shader_write_bit = true },
+                            try is.begin();
+                            {
+                                const access = emma.Resource.Access{
+                                    .resource = &render_texture_resource,
+                                    .stage = .{ .all_transfer_bit = true },
+                                    .access = .{ .transfer_read_bit = true },
+                                    .layout = .transfer_src_optimal,
+                                };
+                                if (emma.make_barrier(resource_manager.last_state.get(render_texture_resource.handle).?, access)) |b| {
+                                    emma.cmd_pipeline_barrier2(is.cmd, &.{b.image}, &.{}, &.{});
+                                }
+                            }
+                            is.cmd.copyImageToBuffer(
+                                render_texture.handle,
                                 .transfer_src_optimal,
-                                .general,
-                                render_texture.full_subresource_range(),
-                            ),
-                        };
-                        const dep_info = vk.DependencyInfo{
-                            .image_memory_barrier_count = barriers.len,
-                            .p_image_memory_barriers = &barriers,
-                        };
-                        is.cmd.pipelineBarrier2(&dep_info);
+                                readback.handle,
+                                &[_]vk.BufferImageCopy{region},
+                            );
+                            {
+                                const barriers = [_]emma.vk.ImageMemoryBarrier2{
+                                    render_texture.image_barrier(
+                                        .{ .all_transfer_bit = true },
+                                        .{ .ray_tracing_shader_bit_khr = true },
+                                        .{ .transfer_read_bit = true },
+                                        .{ .shader_write_bit = true },
+                                        .transfer_src_optimal,
+                                        .general,
+                                        render_texture.full_subresource_range(),
+                                    ),
+                                };
+                                const dep_info = vk.DependencyInfo{
+                                    .image_memory_barrier_count = barriers.len,
+                                    .p_image_memory_barriers = &barriers,
+                                };
+                                is.cmd.pipelineBarrier2(&dep_info);
+                            }
+                            try is.cmd.endCommandBuffer();
+                            const dump_fence = try emma.vlk_fence.init(&u.device, .{});
+                            defer dump_fence.deinit(u.device.logical_device);
+
+                            try u.device.queue.submit(&[1]vk.SubmitInfo{.{
+                                .command_buffer_count = 1,
+                                .p_command_buffers = @ptrCast(&is.cmd.handle),
+                            }}, dump_fence.handle);
+
+                            try dump_fence.wait_and_reset(u.device.logical_device);
+
+                            const mapped = readback.info.pMappedData orelse return error.MapFailed;
+                            const pixels: [*][4]f32 = @ptrCast(@alignCast(mapped));
+
+                            try emma.write_exr_rgba(allocator, pixels, render_texture_width, render_texture_height, "render.exr");
+                        }
                     }
-                    try is.cmd.endCommandBuffer();
-                    const dump_fence = try emma.vlk_fence.init(&u.device, .{});
-                    defer dump_fence.deinit(u.device.logical_device);
-
-                    try u.device.queue.submit(&[1]vk.SubmitInfo{.{
-                        .command_buffer_count = 1,
-                        .p_command_buffers = @ptrCast(&is.cmd.handle),
-                    }}, dump_fence.handle);
-
-                    try dump_fence.wait_and_reset(u.device.logical_device);
-
-                    const mapped = readback.info.pMappedData orelse return error.MapFailed;
-                    const pixels: [*][4]f32 = @ptrCast(@alignCast(mapped));
-
-                    try emma.write_exr_rgba(allocator, pixels, render_texture_width, render_texture_height, "render.exr");
                 }
-            }
 
-            try u.device.logical_device.deviceWaitIdle();
+                try u.device.logical_device.deviceWaitIdle();
+            }
         }
     }
+
+    _ = debug_allocator.deinit();
 }

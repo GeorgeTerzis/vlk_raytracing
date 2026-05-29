@@ -51,9 +51,11 @@ pub const Config = struct {
 
     //leaky
     pub fn deinit(self: *Config) void {
-        const allocator = self.arena.allocator();
-        self.primitive_map.deinit(allocator);
+        const child_allocator = self.arena.child_allocator;
+        self.primitive_map.deinit(self.arena.allocator());
+        self.asset_map.deinit(self.arena.allocator()); // probably also needed
         self.arena.deinit();
+        child_allocator.destroy(self.arena); // ← frees the *ArenaAllocator pointer itself
     }
 };
 

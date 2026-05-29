@@ -21,37 +21,39 @@ pub const geometry = struct {
         allocator: std.mem.Allocator,
         obj_data: *const obj.ObjData,
     ) !geometry {
-        var verts = try std.ArrayList(vert).initCapacity(allocator, 512);
-        try verts.resize(allocator, (obj_data.vertices.len) / 3);
+        var verts = try std.ArrayList(vert).initCapacity(allocator, obj_data.vertices.len / 3);
+        errdefer verts.deinit(allocator);
+        try verts.resize(allocator, obj_data.vertices.len / 3);
         @memcpy(verts.items, std.mem.bytesAsSlice([3]f32, std.mem.sliceAsBytes(obj_data.vertices)));
 
-        var normals = try std.ArrayList(vert).initCapacity(allocator, 512);
-        try normals.resize(allocator, (obj_data.normals.len) / 3);
+        var normals = try std.ArrayList(vert).initCapacity(allocator, obj_data.normals.len / 3);
+        errdefer normals.deinit(allocator);
+        try normals.resize(allocator, obj_data.normals.len / 3);
         @memcpy(normals.items, std.mem.bytesAsSlice([3]f32, std.mem.sliceAsBytes(obj_data.normals)));
 
         var indices = try std.ArrayList(index).initCapacity(allocator, 512);
+        errdefer indices.deinit(allocator);
+
         var normal_indices = try std.ArrayList(index).initCapacity(allocator, 512);
+        errdefer normal_indices.deinit(allocator);
 
         for (obj_data.meshes) |mesh| {
             var i: usize = 0;
-
             while (i + 2 < mesh.indices.len) : (i += 3) {
                 try indices.append(allocator, @intCast(mesh.indices[i + 0].vertex.?));
                 try normal_indices.append(allocator, @intCast(mesh.indices[i + 0].normal.?));
-
                 try indices.append(allocator, @intCast(mesh.indices[i + 1].vertex.?));
                 try normal_indices.append(allocator, @intCast(mesh.indices[i + 1].normal.?));
-
                 try indices.append(allocator, @intCast(mesh.indices[i + 2].vertex.?));
                 try normal_indices.append(allocator, @intCast(mesh.indices[i + 2].normal.?));
             }
         }
 
         return .{
-            .verts = verts.items,
-            .normals = normals.items,
-            .indices = indices.items,
-            .normal_indices = normal_indices.items,
+            .verts = try verts.toOwnedSlice(allocator),
+            .normals = try normals.toOwnedSlice(allocator),
+            .indices = try indices.toOwnedSlice(allocator),
+            .normal_indices = try normal_indices.toOwnedSlice(allocator),
         };
     }
 

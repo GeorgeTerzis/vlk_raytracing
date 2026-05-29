@@ -238,6 +238,7 @@ pub const vlk_device = struct {
 
     fn get_physical_device(allocator: std.mem.Allocator, vki: *vlk_instance, window: *vlk_window) !vk.PhysicalDevice {
         const physical_devices = try vki.instance.enumeratePhysicalDevicesAlloc(allocator);
+        defer allocator.free(physical_devices);
         if (physical_devices.len == 0)
             return error.NoVulkanGPU;
 
@@ -531,6 +532,7 @@ pub fn create_swapchain_images(
     extent: vk.Extent3D,
 ) ![]vlk_image {
     const images = try device.logical_device.getSwapchainImagesAllocKHR(swapchain, allocator);
+    defer allocator.free(images);
 
     const mip_levels = 1;
     const count = images.len;
@@ -2927,6 +2929,10 @@ pub const Pass = struct {
             .writes = .empty,
         };
     }
+    pub fn deinit(self: *Pass, allocator: std.mem.Allocator) void {
+        self.reads.deinit(allocator);
+        self.writes.deinit(allocator);
+    }
 
     pub fn needs_barrier(prev: *const Pass, next: *const Pass, r: Resource.Handle) bool {
         const is_prev_reading = prev.reads.contains(r);
@@ -2958,6 +2964,9 @@ pub const Pass = struct {
 pub const HW_rt_pass = struct {
     pass: Pass,
 
+    pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+        self.pass.deinit(allocator);
+    }
     pub fn init(allocator: std.mem.Allocator, render_texture: *const Resource) !HW_rt_pass {
         var self = HW_rt_pass{
             .pass = .init(),
@@ -2981,7 +2990,9 @@ pub const HW_rt_pass = struct {
 
 pub const Blit_pass = struct {
     pass: Pass,
-
+    pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+        self.pass.deinit(allocator);
+    }
     pub fn init(allocator: std.mem.Allocator, dst: *const Resource, src: *const Resource) !Blit_pass {
         var self = Blit_pass{
             .pass = .init(),
@@ -3013,9 +3024,12 @@ pub const Blit_pass = struct {
 
 pub const Clear_pass = struct {
     pass: Pass,
+    pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+        self.pass.deinit(allocator);
+    }
 
-    pub fn init(allocator: std.mem.Allocator, r: *const Resource) !Blit_pass {
-        var self = Blit_pass{
+    pub fn init(allocator: std.mem.Allocator, r: *const Resource) !@This() {
+        var self = @This(){
             .pass = .init(),
         };
 
@@ -3054,6 +3068,10 @@ pub const Present_pass = struct {
 
 pub const Resource_Manager = struct {
     last_state: ResourceAccessMap,
+
+    pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+        self.last_state.deinit(allocator);
+    }
 
     pub fn init() Resource_Manager {
         return .{ .last_state = .empty };
