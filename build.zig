@@ -39,6 +39,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+
     const vkxml = b.path("vk_deps/vk.xml");
     const vulkan = b.dependency("vulkan", .{
         .target = target,
@@ -50,10 +51,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    // const zigimg = b.dependency("zigimg", .{
-    //     .target = target,
-    //     .optimize = optimize,
-    // });
+
     const obj = b.dependency("obj", .{
         .target = target,
         .optimize = optimize,
@@ -65,8 +63,8 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
-
     const c_module = translate_c.createModule();
+
     exe.root_module.addImport("emma", emma);
     exe.root_module.linkSystemLibrary("vulkan", .{});
     exe.root_module.linkSystemLibrary("sdl3", .{});
@@ -83,26 +81,11 @@ pub fn build(b: *std.Build) void {
         .file = b.path("vk_deps/cxx_vma/vma.cpp"),
     });
 
-    // // b.addCSourceFile(.{
-    // //     .file = b.path("vk_deps/tinyexr/tinyexr.cc"),
-    // });
-    // exe.addCSourceFile(.{
-    //     .file = b.path("vk_deps/tinyexr/miniz.c"),
-    // });
-    // exe.addCSourceFile(.{
-    //     .file = b.path("vk_deps/cxx_vma/vma.cpp"),
-    // });
-    // exe.linkLibCpp();
-
-    // exe.root_module.addImport("zigimg", zigimg.module("zigimg"));
-
     emma.addImport("c_libs", c_module);
     emma.addImport("mth", mth);
     emma.addImport("obj", obj.module("obj"));
     emma.addImport("vulkan", vulkan.module("vulkan-zig"));
     emma.addImport("sdl3", sdl3.module("sdl3"));
-    // emma.addIncludePath(b.path("vk_deps/tinyexr"));
-    // emma.addIncludePath(b.path("vk_deps/cxx_vma"));
 
     b.installArtifact(exe);
     const run_exe = b.addRunArtifact(exe);

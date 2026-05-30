@@ -41,10 +41,11 @@ pub const geometry = struct {
             var i: usize = 0;
             while (i + 2 < mesh.indices.len) : (i += 3) {
                 try indices.append(allocator, @intCast(mesh.indices[i + 0].vertex.?));
-                try normal_indices.append(allocator, @intCast(mesh.indices[i + 0].normal.?));
                 try indices.append(allocator, @intCast(mesh.indices[i + 1].vertex.?));
-                try normal_indices.append(allocator, @intCast(mesh.indices[i + 1].normal.?));
                 try indices.append(allocator, @intCast(mesh.indices[i + 2].vertex.?));
+
+                try normal_indices.append(allocator, @intCast(mesh.indices[i + 0].normal.?));
+                try normal_indices.append(allocator, @intCast(mesh.indices[i + 1].normal.?));
                 try normal_indices.append(allocator, @intCast(mesh.indices[i + 2].normal.?));
             }
         }

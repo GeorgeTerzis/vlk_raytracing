@@ -58,12 +58,6 @@ const HW_raytracing_pipeline = struct {
         //devilish cast
         const stages = @as([]const vk.PipelineShaderStageCreateInfo, @ptrCast(shader_stages));
 
-        // const stages = [_]vk.PipelineShaderStageCreateInfo{
-        //     shader_modules[0].info,
-        //     shader_modules[1].info,
-        //     shader_modules[2].info,
-        // };
-
         // groups can be used to make shader combinations
         // for example triangle_hit + any hit
         // what you can combine is determined by the vulkan spec
@@ -238,6 +232,11 @@ fn build_device_geometry(
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const clock = std.Io.Clock.real;
+    var args = init.minimal.args;
+    const args_slice = try args.toSlice(init.arena.allocator());
+
+    const scene_filepath = if (args_slice.len < 2) "./scene.zon" else args_slice[1];
+    std.log.info("Using scene from \"{s}\"", .{scene_filepath});
 
     try emma.sdl_init();
     defer emma.sdl_deinit();
@@ -255,7 +254,6 @@ pub fn main(init: std.process.Init) !void {
         var key_state = std.mem.zeroes([sdl.c.SDL_SCANCODE_COUNT]bool);
 
         // const scene_filepath = if (builtin.mode == .Debug) "./scene_lite.zon" else "./scene.zon";
-        const scene_filepath = "./scene.zon";
 
         var scene_config = blk: {
             const file = try std.Io.Dir.cwd().openFile(io, scene_filepath, .{});
