@@ -287,8 +287,12 @@ struct GGXLobe : Lobe {
         return result;
     }
 
+    static float alpha(float roughness){
+        return max(roughness * roughness, 1e-4);
+    }
+
     float3 eval(float3 view, float3 light_dir, Surface surface) {
-        let a = max(roughness * roughness, 1e-4);
+        let a = alpha(roughness);
 
         let wo_local = to_local_vndf(view, surface);
         let wi_local = to_local_vndf(light_dir, surface);
@@ -298,7 +302,7 @@ struct GGXLobe : Lobe {
     }
 
     LobeResult sample_lobe(float3 view, Surface surface, float2 u, inout uint seed) {
-        let a = max(roughness * roughness, 0.0);
+        let a = alpha(roughness);
 
         let wo_local = to_local_vndf(view, surface);
         let wm_local = VNDF::GgxVndf(wo_local, a, u);

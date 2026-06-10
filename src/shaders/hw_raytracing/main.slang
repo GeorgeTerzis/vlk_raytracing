@@ -194,7 +194,7 @@ void raygen_entry() {
         var seed = screen.coords.x * 1973 + screen.coords.y * 9277 + pc.frame * 26699;
         let jitter = random::f2(seed);
         let uv =
-            ((float2(screen.coords.xy) + jitter - (pc.res.xy * 0.5)) / (pc.res.y)) * fov;
+            ((float2(screen.coords.xy) + jitter - (float2(pc.res.xy) * 0.5)) / ((float)(pc.res.y))) * fov;
         let dir = normalize(float3(uv.x, -uv.y, -1.0));
 
         var ray = RayDesc(camera_position, 1e-5, dir, 1e+4);

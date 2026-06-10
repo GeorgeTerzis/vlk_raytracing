@@ -17,7 +17,7 @@ pub fn build(b: *std.Build) void {
     const shader_step = b.step("shaders", "Compile shaders");
     const compile_shader = b.addSystemCommand(&.{
         "slangc",
-        "-O3",
+        if (builtin.mode == .Debug) "-g3" else "-O3",
         "src/shaders/hw_raytracing/main.slang",
         "-o",
         "src/shaders/hw_raytracing/shader.spv",
