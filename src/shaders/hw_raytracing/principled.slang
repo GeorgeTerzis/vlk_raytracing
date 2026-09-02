@@ -2,8 +2,8 @@ module principled;
 
 import lobe;
 import surface;
-import math;
-import rand;
+import "../common/math";
+import "../common/rand";
 import state;
 
 float3 to_local_vndf(float3 v, float3 n, float3 t, float3 b) {
@@ -19,31 +19,12 @@ float3 to_world_vndf(float3 v, Surface surface) {
     return to_world_vndf(v, surface.normal, surface.tangent, surface.bitangent);
 }
 
-// float3 to_local(float3 v, float3 n, float3 t, float3 b) {
-//     return float3(dot(v, t), dot(v, b), dot(v, n));
-// }
-// float3 to_world(float3 v, float3 normal, float3 tangent, float3 bitangent) {
-//     return tangent * v.x + bitangent * v.y + normal * v.z;
-// }
-// float3 to_local(float3 v, Surface surface) {
-//     return to_local(v, surface.normal, surface.tangent, surface.bitangent);
-// }
-// float3 to_world(float3 v, Surface surface) {
-//     return to_world(v, surface.normal, surface.tangent, surface.bitangent);
-// }
-// static float ggx_D(Surface surface, float a, float3 h) {
-//     let hl = to_local(h, surface.normal, surface.tangent, surface.bitangent);
-//     float a2 = a * a;
-//     float NdotH = max(hl.z, 1e-5);
-//     float denom = PI * pow(NdotH * NdotH * (a2 - 1) + 1, 2);
-//     return a2 / denom;
-// }
-
 // https://schuttejoe.github.io/post/ggximportancesamplingpart1/
 // https://schuttejoe.github.io/post/ggximportancesamplingpart2/
 float BsdfNDot(float3 w_local) {
     return w_local.y;
 }
+
 public struct VNDF {
     public static let XAxis_ = float3(1, 0, 0);
     public static let YAxis_ = float3(0, 1, 0);
@@ -143,7 +124,7 @@ public struct Transmission : Lobe {
             return result;
         } else {
             var refracted = refract(I, surface.normal, eta);
-            let noise = cosine_hemisphere(refracted, seed) * roughness;
+            let noise = cosine_hemisphere_u(refracted, u) * roughness;
             return LobeResult((1 - F) * color, normalize(refracted + noise));
         }
     }
@@ -173,9 +154,9 @@ struct DiffuseLobe : Lobe {
         }
     };
 
-    static float3 sample_direction(float3 normal, inout uint seed) {
-        return cosine_hemisphere(normal, seed);
-    }
+    // static float3 sample_direction(float3 normal, inout uint seed) {
+    //     return cosine_hemisphere(normal, seed);
+    // }
 
     static float sample_pdf(float NoL) {
         return NoL / PI;
@@ -242,8 +223,12 @@ struct DiffuseLobe : Lobe {
         return f * NoL;
     }
 
+    static float3 sample_direction(float3 normal, float2 u) {
+        return cosine_hemisphere_u(normal, u);
+    }
+
     LobeResult sample_lobe(float3 view, Surface surface, float2 u, inout uint seed) {
-        let dir = sample_direction(surface.normal, seed);
+        let dir = sample_direction(surface.normal, u);
         let NoL = max(dot(surface.normal, dir), 1e-5);
         let pdf = sample_pdf(NoL);
         if (pdf <= 1e-5f)
@@ -287,7 +272,7 @@ struct GGXLobe : Lobe {
         return result;
     }
 
-    static float alpha(float roughness){
+    static float alpha(float roughness) {
         return max(roughness * roughness, 1e-4);
     }
 
@@ -426,13 +411,14 @@ public struct Principled {
     public clearcoat_params pclearcoat;
     public transmission_params ptransmission;
 
-    public LobeResult scatter(Surface surface, float3 ray_dir, inout uint seed) {
+    public LobeResult
+    scatter(Surface surface, float3 ray_dir, float4 u4, inout uint seed) {
         let view = -ray_dir;
 
         let w = compute_weights();
 
-        let r = random::unit(seed);
-        let u = random::f2(seed);
+        let r = u4.x;
+        let u = u4.yz;
         var result = LobeResult(0, 0);
 
         if (r < w.pd) {

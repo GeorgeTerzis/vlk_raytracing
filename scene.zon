@@ -1,7 +1,7 @@
 .{
     .settings = .{
         .resolution = .{ 3440, 1440 },
-        .render_tile = .{ 1440, 1440 },
+        .render_tile = .{ 3440, 1440 },
     },
 
     .scene = .{
@@ -23,12 +23,12 @@
                 .path = "./src/models/scene/sphere.obj",
             },
             .{
-                .name = "light",
-                .path = "./src/models/scene/light.obj",
-            },
-            .{
                 .name = "monolith",
                 .path = "./src/models/scene/monolith.obj",
+            },
+            .{
+                .name = "plane",
+                .path = "./src/models/plane.obj",
             },
         },
 
@@ -73,20 +73,10 @@
                     .scale = .{ 1.0, 1.0, 1.0 },
                 },
             },
-            // .{
-            //     .name = "light",
-            //     .primitive = "light",
-            //     .material = 5,
-            //     .transform = .{
-            //         .pos = .{ 2.0, 0.0, 5.0 },
-            //         .rot = .{ 0.0, 0.0, 0.0 },
-            //         .scale = .{ 5.0, 1.0, 5.0 },
-            //     },
-            // },
             .{
                 .name = "monolith",
                 .primitive = "monolith",
-                .material = 4,
+                .material = 2,
                 .transform = .{
                     .pos = .{ 1.0, 0.0, 5.0 },
                     .rot = .{ 0.0, 0.0, 0.0 },

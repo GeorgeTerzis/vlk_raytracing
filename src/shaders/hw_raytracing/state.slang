@@ -1,13 +1,26 @@
 module state;
 
-public struct State{
+public struct State {
     public float3 pos;
-    public float3 ray_dir;
+    public half3 color;
+    public half3 throughput;
+    public half3 ray_dir;
 
-    public float3 color;
-    public float3 throughput;
-
+    public uint norm_enc;
     public uint seed;
-    public uint bounce;
-    public bool hit;
+
+    public uint bounce_hit;
+
+    static public uint new_bounce(uint n) {
+        return n << 1;
+    }
+    public uint new_hit(bool b) {
+        return (bounce_hit & ~1u) | ((b) ? 1u : 0u);
+    }
+    public uint get_bounce() {
+        return bounce_hit >> 1;
+    }
+    public bool get_hit() {
+        return (bounce_hit & 1u) != 0u;
+    }
 };
